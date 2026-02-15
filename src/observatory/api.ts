@@ -40,6 +40,20 @@ export function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       return;
     }
 
+    // GET /api/swarms/:id/timing
+    const timingMatch = path.match(/^\/api\/swarms\/([^/]+)\/timing$/);
+    if (timingMatch && req.method === "GET") {
+      const swarm = db.findSwarm(timingMatch[1]);
+      if (!swarm) {
+        notFound(res, "Swarm not found");
+        return;
+      }
+      const flightDurations = db.getFlightDurations(swarm.id);
+      const cellDurations = db.getCellDurations(swarm.id);
+      json(res, { swarm_id: swarm.id, flights: flightDurations, cells: cellDurations });
+      return;
+    }
+
     // GET /api/swarms/:id
     const swarmMatch = path.match(/^\/api\/swarms\/([^/]+)$/);
     if (swarmMatch && req.method === "GET") {

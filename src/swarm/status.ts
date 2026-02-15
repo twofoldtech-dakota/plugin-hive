@@ -54,9 +54,11 @@ export function getSwarmStatus(query: string): GetSwarmStatusResult {
         status: f.status,
         type: f.type,
         retries: f.retry_count,
+        started_at: f.started_at,
+        completed_at: f.completed_at,
       })),
       cells: cells.length > 0
-        ? cells.map(c => ({ id: c.cell_id, title: c.title, status: c.status }))
+        ? cells.map(c => ({ id: c.cell_id, title: c.title, status: c.status, started_at: c.started_at, completed_at: c.completed_at }))
         : undefined,
     },
   };

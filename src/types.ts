@@ -37,6 +37,7 @@ export interface FlightSpec {
   bee: string;
   type: "single" | "loop";
   loop?: LoopConfig;
+  depends_on?: string[];
   input: string;
   expects: string;
   max_retries: number;
@@ -107,6 +108,9 @@ export interface FlightRecord {
   current_cell_id: string | null;
   abandoned_count: number;
   verify_meta: string | null; // JSON string for verification flight metadata
+  depends_on: string | null; // JSON string of string[] (DAG flight IDs)
+  started_at: string | null;
+  completed_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -130,6 +134,8 @@ export interface CellRecord {
   output: string | null;
   retry_count: number;
   max_retries: number;
+  started_at: string | null;
+  completed_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -203,6 +209,7 @@ export interface SpawnRequest {
   swarmId: string;
   beeId: string;
   flightId: string;
+  flightDescription?: string;
   prompt: string;
   model: string;
   tools: string[];
@@ -235,6 +242,7 @@ export interface BeeReadiness {
 
 export interface AdvanceResult {
   action: "completed" | "advanced" | "none";
+  advancedFlights?: string[];
 }
 
 // ── Beekeeper ────────────────────────────────────────────────────────

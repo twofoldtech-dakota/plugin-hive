@@ -1,6 +1,7 @@
 import * as db from "../db.js";
 import { resolveNectar } from "./template.js";
 import { emitEvent } from "../lib/events.js";
+import { nowUtc } from "../lib/time.js";
 import type { FlightClaimResult } from "../types.js";
 
 export type ClaimFlightResult =
@@ -23,7 +24,7 @@ export function claimFlight(beeId: string): ClaimFlightResult {
   if (flight.type === "loop") {
     const nextCell = db.getNextPendingCell(flight.swarm_id);
     if (nextCell) {
-      db.updateCell(nextCell.id, { status: "in_progress" });
+      db.updateCell(nextCell.id, { status: "in_progress", started_at: nowUtc() });
       db.updateFlight(flight.id, { current_cell_id: nextCell.id });
       nectar.current_cell = `${nextCell.title}: ${nextCell.description}`;
       nectar.acceptance_criteria = nextCell.acceptance_criteria;

@@ -155,4 +155,71 @@ describe("BlueprintSpecSchema", () => {
     const result = BlueprintSpecSchema.safeParse(bp);
     expect(result.success).toBe(false);
   });
+
+  // ── depends_on (DAG) validation ──────────────────────────────────
+
+  it("accepts a blueprint with valid depends_on", () => {
+    const bp = {
+      ...minimalBlueprint,
+      flights: [
+        { id: "first", bee: "worker", input: "x", expects: "x" },
+        { id: "second", bee: "worker", depends_on: ["first"], input: "x", expects: "x" },
+      ],
+    };
+    const result = BlueprintSpecSchema.safeParse(bp);
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects depends_on referencing unknown flight", () => {
+    const bp = {
+      ...minimalBlueprint,
+      flights: [
+        { id: "first", bee: "worker", input: "x", expects: "x" },
+        { id: "second", bee: "worker", depends_on: ["nonexistent"], input: "x", expects: "x" },
+      ],
+    };
+    const result = BlueprintSpecSchema.safeParse(bp);
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects self-referencing depends_on", () => {
+    const bp = {
+      ...minimalBlueprint,
+      flights: [
+        { id: "first", bee: "worker", depends_on: ["first"], input: "x", expects: "x" },
+      ],
+    };
+    const result = BlueprintSpecSchema.safeParse(bp);
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects cyclic depends_on", () => {
+    const bp = {
+      ...minimalBlueprint,
+      bees: [
+        { id: "worker", role: "coding", chamber: { base_dir: "w", files: {} } },
+      ],
+      flights: [
+        { id: "a", bee: "worker", depends_on: ["c"], input: "x", expects: "x" },
+        { id: "b", bee: "worker", depends_on: ["a"], input: "x", expects: "x" },
+        { id: "c", bee: "worker", depends_on: ["b"], input: "x", expects: "x" },
+      ],
+    };
+    const result = BlueprintSpecSchema.safeParse(bp);
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts DAG with parallel branches", () => {
+    const bp = {
+      ...minimalBlueprint,
+      flights: [
+        { id: "root", bee: "worker", input: "x", expects: "x" },
+        { id: "branch-a", bee: "worker", depends_on: ["root"], input: "x", expects: "x" },
+        { id: "branch-b", bee: "worker", depends_on: ["root"], input: "x", expects: "x" },
+        { id: "merge", bee: "worker", depends_on: ["branch-a", "branch-b"], input: "x", expects: "x" },
+      ],
+    };
+    const result = BlueprintSpecSchema.safeParse(bp);
+    expect(result.success).toBe(true);
+  });
 });

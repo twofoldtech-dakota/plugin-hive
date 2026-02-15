@@ -340,6 +340,74 @@ server.tool(
   },
 );
 
+// ── Swarm Summary + Epoch Tools ─────────────────────────────────────
+
+server.tool(
+  "hive_swarm_summary",
+  "Get a compact swarm status summary optimized for the coordinator loop (status, pipeline, cell counts, active bees)",
+  { swarm_id: z.string().describe("The swarm ID") },
+  async ({ swarm_id }) => {
+    const swarm = db.getSwarm(swarm_id);
+    if (!swarm) {
+      return { content: [{ type: "text" as const, text: `Swarm not found: ${swarm_id}` }], isError: true };
+    }
+
+    const flights = db.getFlightsForSwarm(swarm_id);
+    const regularFlights = flights.filter(f => !f.verify_meta);
+    const cells = db.getCellsForSwarm(swarm_id);
+
+    const pipeline = regularFlights.map(f => ({
+      id: f.flight_id,
+      status: f.status,
+      bee: f.bee_id,
+      type: f.type,
+      started_at: f.started_at,
+      completed_at: f.completed_at,
+    }));
+
+    const cellCounts = {
+      total: cells.length,
+      done: cells.filter(c => c.status === "done").length,
+      in_progress: cells.filter(c => c.status === "in_progress").length,
+      pending: cells.filter(c => c.status === "pending").length,
+      verifying: cells.filter(c => c.status === "verifying").length,
+      failed: cells.filter(c => c.status === "failed").length,
+    };
+
+    const activeBees = regularFlights
+      .filter(f => f.status === "in_flight")
+      .map(f => f.bee_id);
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          swarm_id: swarm.id,
+          swarm_number: swarm.swarm_number,
+          status: swarm.status,
+          task: swarm.task,
+          pipeline,
+          cells: cellCounts,
+          active_bees: activeBees,
+          epoch: db.getEpoch(),
+        }, null, 2),
+      }],
+    };
+  },
+);
+
+server.tool(
+  "hive_check_epoch",
+  "Check the current epoch counter. Use for change detection — if epoch hasn't changed, skip expensive queries.",
+  {},
+  async () => {
+    const epoch = db.getEpoch();
+    return {
+      content: [{ type: "text", text: JSON.stringify({ epoch }) }],
+    };
+  },
+);
+
 // ── Cell Tools ───────────────────────────────────────────────────────
 
 server.tool(

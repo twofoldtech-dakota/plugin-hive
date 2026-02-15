@@ -35,6 +35,20 @@ export function createSwarmFromBlueprint(blueprintId: string, task: string): Cre
     }
   }
 
+  // Detect DAG mode: any non-template flight has depends_on
+  const pipelineFlights = spec.flights.filter(f => !verifyFlightIds.has(f.id));
+  const isDAG = pipelineFlights.some(f => f.depends_on && f.depends_on.length > 0);
+
+  // Compute DAG roots (flights with no dependencies)
+  const dagRoots = new Set<string>();
+  if (isDAG) {
+    for (const flight of pipelineFlights) {
+      if (!flight.depends_on || flight.depends_on.length === 0) {
+        dagRoots.add(flight.id);
+      }
+    }
+  }
+
   // Insert flights from blueprint, skipping verify_flight templates
   let flightIndex = 0;
   let insertedCount = 0;
@@ -45,7 +59,12 @@ export function createSwarmFromBlueprint(blueprintId: string, task: string): Cre
     }
 
     const beeId = `${blueprintId}_${flight.bee}`;
-    const status = flightIndex === 0 ? "pending" : "waiting";
+    let status: "pending" | "waiting";
+    if (isDAG) {
+      status = dagRoots.has(flight.id) ? "pending" : "waiting";
+    } else {
+      status = flightIndex === 0 ? "pending" : "waiting";
+    }
     db.insertFlight(
       swarm.id,
       flight.id,
@@ -57,6 +76,7 @@ export function createSwarmFromBlueprint(blueprintId: string, task: string): Cre
       flight.max_retries ?? 2,
       flight.type ?? "single",
       flight.loop ? JSON.stringify(flight.loop) : undefined,
+      flight.depends_on,
     );
     flightIndex++;
     insertedCount++;

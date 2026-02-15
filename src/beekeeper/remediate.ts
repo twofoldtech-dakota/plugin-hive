@@ -3,6 +3,7 @@ import { advancePipeline } from "../pipeline/advance.js";
 import { scheduler } from "../pollinator/scheduler.js";
 import { emitEvent } from "../lib/events.js";
 import { logger } from "../lib/logger.js";
+import { nowUtc } from "../lib/time.js";
 import type { RemediationResult } from "../types.js";
 
 /**
@@ -18,7 +19,7 @@ export function resetStuckFlight(flightId: string): RemediationResult {
   const newAbandonCount = flight.abandoned_count + 1;
 
   if (newAbandonCount >= 5) {
-    db.updateFlight(flightId, { status: "failed", abandoned_count: newAbandonCount });
+    db.updateFlight(flightId, { status: "failed", abandoned_count: newAbandonCount, completed_at: nowUtc() });
     db.updateSwarm(flight.swarm_id, { status: "failed" });
     emitEvent({ eventType: "flight.failed", swarmId: flight.swarm_id, payload: { flight_id: flight.flight_id, reason: "exhausted_abandons" } });
     emitEvent({ eventType: "swarm.failed", swarmId: flight.swarm_id, payload: { reason: "flight_exhausted" } });
@@ -79,7 +80,7 @@ export function failExhaustedFlight(flightId: string): RemediationResult {
     return { action: "failExhaustedFlight", entity_id: flightId, success: false, detail: "Flight not found" };
   }
 
-  db.updateFlight(flightId, { status: "failed" });
+  db.updateFlight(flightId, { status: "failed", completed_at: nowUtc() });
   db.updateSwarm(flight.swarm_id, { status: "failed" });
   emitEvent({ eventType: "flight.failed", swarmId: flight.swarm_id, payload: { flight_id: flight.flight_id, reason: "exhausted_retries" } });
   emitEvent({ eventType: "swarm.failed", swarmId: flight.swarm_id, payload: { reason: "flight_exhausted" } });

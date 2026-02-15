@@ -5,6 +5,7 @@ import { parseCellsJson } from "../cell/parse.js";
 import { insertCellsFromParsed } from "../cell/manage.js";
 import { logger } from "../lib/logger.js";
 import { safeJsonParse } from "../lib/json.js";
+import { nowUtc } from "../lib/time.js";
 import type { LoopConfig, BlueprintSpec, FlightRecord } from "../types.js";
 
 export type CompleteFlightResult =
@@ -61,7 +62,9 @@ export function completeFlight(flightId: string, output: string): CompleteFlight
   }
 
   // ── Single flight — mark done and advance ───────────────────────
-  db.updateFlight(flightId, { status: "done", output });
+  const now = nowUtc();
+  db.updateFlight(flightId, { status: "done", output, completed_at: now });
+  db.bumpEpoch();
   emitEvent({ eventType: "flight.completed", swarmId: flight.swarm_id, payload: { flight_id: flight.flight_id } });
   const advResult = advancePipeline(flight.swarm_id);
   if (advResult.action === "completed") {
@@ -110,6 +113,7 @@ function handleLoopCellCompletion(
 
     // Set parent loop flight to waiting
     db.updateFlight(flight.id, { status: "waiting", output, current_cell_id: null });
+    db.bumpEpoch();
     logger.info("Cell awaiting verification", {
       swarmId: flight.swarm_id,
       cellId: flight.current_cell_id,
@@ -125,7 +129,8 @@ function completeLoopCellNormally(
   flight: FlightRecord,
   output: string,
 ): CompleteFlightResult {
-  db.updateCell(flight.current_cell_id!, { status: "done", output });
+  const now = nowUtc();
+  db.updateCell(flight.current_cell_id!, { status: "done", output, completed_at: now });
   emitEvent({
     eventType: "cell.completed",
     swarmId: flight.swarm_id,
@@ -137,7 +142,7 @@ function completeLoopCellNormally(
   if (nextCell) {
     db.updateFlight(flight.id, { status: "pending", output, current_cell_id: null });
   } else {
-    db.updateFlight(flight.id, { status: "done", output, current_cell_id: null });
+    db.updateFlight(flight.id, { status: "done", output, current_cell_id: null, completed_at: now });
     emitEvent({
       eventType: "flight.completed",
       swarmId: flight.swarm_id,
@@ -146,6 +151,7 @@ function completeLoopCellNormally(
     advancePipeline(flight.swarm_id);
   }
 
+  db.bumpEpoch();
   logger.info("Flight completed (loop cell)", { flightId: flight.id, flightName: flight.flight_id });
   return { success: true, message: `Flight "${flight.flight_id}" completed cell` };
 }
@@ -226,8 +232,10 @@ function handleVerificationCompletion(
     flight.verify_meta ?? "",
     null,
   );
+  const now = nowUtc();
   if (!meta) {
-    db.updateFlight(flight.id, { status: "done", output });
+    db.updateFlight(flight.id, { status: "done", output, completed_at: now });
+    db.bumpEpoch();
     return { success: true, message: "Verification flight completed (corrupt metadata)" };
   }
 
@@ -236,7 +244,7 @@ function handleVerificationCompletion(
   const status = statusMatch?.[1]?.toLowerCase() ?? "pass";
 
   // Mark verification flight as done
-  db.updateFlight(flight.id, { status: "done", output });
+  db.updateFlight(flight.id, { status: "done", output, completed_at: now });
 
   const parentFlight = db.getFlight(meta.parent_flight_id);
   if (!parentFlight) {
@@ -269,7 +277,7 @@ function handleVerificationCompletion(
   }
 
   // STATUS: pass — cell is verified done
-  db.updateCell(meta.cell_id, { status: "done" });
+  db.updateCell(meta.cell_id, { status: "done", completed_at: now });
   emitEvent({
     eventType: "cell.completed",
     swarmId: flight.swarm_id,
@@ -283,7 +291,7 @@ function handleVerificationCompletion(
     db.updateFlight(meta.parent_flight_id, { status: "pending" });
   } else {
     // All cells verified — complete parent loop flight
-    db.updateFlight(meta.parent_flight_id, { status: "done", current_cell_id: null });
+    db.updateFlight(meta.parent_flight_id, { status: "done", current_cell_id: null, completed_at: now });
     emitEvent({
       eventType: "flight.completed",
       swarmId: flight.swarm_id,
@@ -292,6 +300,7 @@ function handleVerificationCompletion(
     advancePipeline(flight.swarm_id);
   }
 
+  db.bumpEpoch();
   logger.info("Verification: passed", { cellId: meta.cell_id });
   return { success: true, message: `Verification passed for cell` };
 }

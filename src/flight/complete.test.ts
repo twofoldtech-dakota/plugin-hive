@@ -55,6 +55,8 @@ describe("completeFlight", () => {
 
     const flight = db.getFlight(flights[0].id)!;
     expect(flight.status).toBe("done");
+    expect(flight.completed_at).toBeDefined();
+    expect(flight.completed_at).not.toBeNull();
 
     // Check nectar was updated
     const swarmUpdated = db.getSwarm(swarm.id)!;

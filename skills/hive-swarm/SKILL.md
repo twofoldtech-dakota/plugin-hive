@@ -64,3 +64,4 @@ Dispatching bees:
 
 - Always pollinate immediately after starting a swarm — this kicks off the first flight.
 - Do NOT write code or edit files. This skill only starts swarms.
+- After starting a swarm, suggest: "Use `/hive-drive` to run this swarm autonomously."

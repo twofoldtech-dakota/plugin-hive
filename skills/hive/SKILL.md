@@ -27,6 +27,7 @@ Parse the first word of `$ARGUMENTS` as the sub-command. If no arguments are giv
 | `beekeeper` | Run a health check (see **beekeeper**) |
 | `cells <number\|id>` | List cells for a swarm (see **cells**) |
 | `pollinate [swarm_id]` | Trigger a pollination cycle (see **pollinate**) |
+| `drive [blueprint task\|number]` | Autonomously drive a swarm (suggest `/hive-drive`) |
 | `observatory [start\|stop\|status]` | Manage the Observatory dashboard (see **observatory**) |
 
 ---
@@ -47,6 +48,7 @@ Start a new swarm from a blueprint.
 4. Call `mcp__hive__hive_swarm_start` with the blueprint_id and task.
 5. Immediately call `mcp__hive__hive_pollinate` with the returned swarm_id to kick off the first work cycle.
 6. Report the swarm number and any spawn requests returned by pollinate.
+7. Suggest: "Use `/hive-drive` to run this swarm autonomously."
 
 ### status
 

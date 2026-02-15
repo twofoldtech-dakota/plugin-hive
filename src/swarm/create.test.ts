@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { freshDb, seedBlueprint, MINIMAL_BLUEPRINT, LOOP_BLUEPRINT } from "../test/helpers.js";
+import { freshDb, seedBlueprint, MINIMAL_BLUEPRINT, LOOP_BLUEPRINT, DAG_BLUEPRINT } from "../test/helpers.js";
 import * as db from "../db.js";
 import { createSwarmFromBlueprint } from "./create.js";
 import type { BlueprintSpec } from "../types.js";
@@ -141,5 +141,37 @@ describe("createSwarmFromBlueprint", () => {
     if (r1.success && r2.success) {
       expect(r2.data.number).toBe(r1.data.number + 1);
     }
+  });
+
+  it("sets DAG roots as pending and dependents as waiting", () => {
+    seedBlueprint(DAG_BLUEPRINT);
+    const result = createSwarmFromBlueprint("test-dag", "DAG task");
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+
+    const flights = db.getFlightsForSwarm(result.data.id);
+    const decompose = flights.find(f => f.flight_id === "decompose")!;
+    const implement = flights.find(f => f.flight_id === "implement")!;
+    const finalize = flights.find(f => f.flight_id === "finalize")!;
+
+    // Root (no depends_on) should be pending
+    expect(decompose.status).toBe("pending");
+    // Flights with dependencies should be waiting
+    expect(implement.status).toBe("waiting");
+    expect(finalize.status).toBe("waiting");
+  });
+
+  it("stores depends_on as JSON in DAG flights", () => {
+    seedBlueprint(DAG_BLUEPRINT);
+    const result = createSwarmFromBlueprint("test-dag", "DAG task");
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+
+    const flights = db.getFlightsForSwarm(result.data.id);
+    const finalize = flights.find(f => f.flight_id === "finalize")!;
+    expect(finalize.depends_on).toBeDefined();
+    const deps = JSON.parse(finalize.depends_on!);
+    expect(deps).toContain("test");
+    expect(deps).toContain("lint");
   });
 });

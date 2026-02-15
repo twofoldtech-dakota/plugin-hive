@@ -39,6 +39,7 @@ const FlightSpecSchema = z.object({
   bee: z.string().min(1),
   type: z.enum(["single", "loop"]).default("single"),
   loop: LoopConfigSchema.optional(),
+  depends_on: z.array(z.string().min(1)).optional(),
   input: z.string().min(1),
   expects: z.string().min(1),
   max_retries: z.number().int().min(0).default(2),
@@ -109,6 +110,71 @@ export const BlueprintSpecSchema = z
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: `Loop flight "${flight.id}" must have a loop configuration`,
+          path: ["flights"],
+        });
+      }
+    }
+
+    // Validate depends_on references (DAG mode)
+    const hasAnyDeps = blueprint.flights.some(f => f.depends_on && f.depends_on.length > 0);
+    if (hasAnyDeps) {
+      for (const flight of blueprint.flights) {
+        if (flight.depends_on) {
+          for (const dep of flight.depends_on) {
+            if (!flightIds.has(dep)) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: `Flight "${flight.id}" depends_on unknown flight "${dep}"`,
+                path: ["flights"],
+              });
+            }
+            if (dep === flight.id) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: `Flight "${flight.id}" cannot depend on itself`,
+                path: ["flights"],
+              });
+            }
+          }
+        }
+      }
+
+      // Kahn's algorithm for cycle detection
+      const inDegree = new Map<string, number>();
+      const adj = new Map<string, string[]>();
+      for (const flight of blueprint.flights) {
+        inDegree.set(flight.id, 0);
+        adj.set(flight.id, []);
+      }
+      for (const flight of blueprint.flights) {
+        if (flight.depends_on) {
+          for (const dep of flight.depends_on) {
+            if (adj.has(dep)) {
+              adj.get(dep)!.push(flight.id);
+              inDegree.set(flight.id, (inDegree.get(flight.id) ?? 0) + 1);
+            }
+          }
+        }
+      }
+
+      const queue: string[] = [];
+      for (const [id, deg] of inDegree) {
+        if (deg === 0) queue.push(id);
+      }
+      let visited = 0;
+      while (queue.length > 0) {
+        const node = queue.shift()!;
+        visited++;
+        for (const neighbor of adj.get(node) ?? []) {
+          const newDeg = (inDegree.get(neighbor) ?? 1) - 1;
+          inDegree.set(neighbor, newDeg);
+          if (newDeg === 0) queue.push(neighbor);
+        }
+      }
+      if (visited < blueprint.flights.length) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Flight dependency graph contains a cycle",
           path: ["flights"],
         });
       }

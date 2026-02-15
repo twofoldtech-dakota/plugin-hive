@@ -146,10 +146,17 @@ export function buildSpawnRequest(
     ? Math.max(Math.floor(beeSpec.timeout_seconds / 10), 10)
     : 30;
 
+  // Build a human-readable description for the coordinator
+  let flightDescription = `${claimResult.type} flight (${beeSpec.role})`;
+  if (claimResult.cell) {
+    flightDescription = `implement cell: ${claimResult.cell.cell_id} (${beeSpec.role})`;
+  }
+
   return {
     swarmId: claimResult.swarm_id,
     beeId: beeSpec.id,
     flightId: claimResult.flight_id,
+    flightDescription,
     prompt,
     model,
     tools: toolConfig.tools,

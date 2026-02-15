@@ -316,6 +316,17 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
     renderSwarmDetail(selectedSwarm, flights, cells, events);
   }
 
+  // --- Format duration ---
+  function formatDuration(startedAt, completedAt) {
+    if (!startedAt) return '';
+    var start = new Date(startedAt.replace(' ', 'T') + 'Z');
+    var end = completedAt ? new Date(completedAt.replace(' ', 'T') + 'Z') : new Date();
+    var secs = Math.floor((end - start) / 1000);
+    if (secs < 60) return secs + 's';
+    if (secs < 3600) return Math.floor(secs / 60) + 'm ' + (secs % 60) + 's';
+    return Math.floor(secs / 3600) + 'h ' + Math.floor((secs % 3600) / 60) + 'm';
+  }
+
   // --- Render swarm detail ---
   function renderSwarmDetail(swarm, flights, cells, events) {
     const content = document.getElementById('content');
@@ -324,7 +335,9 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
     // Pipeline
     html += '<div class="card"><div class="card-header">Flight Pipeline</div><div class="card-body"><div class="pipeline">';
     flights.filter(f => !f.verify_meta).forEach((f, i, arr) => {
-      html += '<div class="flight-node ' + f.status + '" title="' + escapeHtml(f.flight_id) + '">' + escapeHtml(f.flight_id) + '</div>';
+      var dur = formatDuration(f.started_at, f.completed_at);
+      var durLabel = dur ? ' (' + dur + ')' : '';
+      html += '<div class="flight-node ' + f.status + '" title="' + escapeHtml(f.flight_id) + durLabel + '">' + escapeHtml(f.flight_id) + (dur ? '<br><small>' + dur + '</small>' : '') + '</div>';
       if (i < arr.length - 1) html += '<span class="pipeline-arrow">&#9654;</span>';
     });
     html += '</div></div></div>';

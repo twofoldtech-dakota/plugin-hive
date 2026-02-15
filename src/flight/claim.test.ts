@@ -23,6 +23,10 @@ describe("claimFlight", () => {
       expect(result.data.resolved_input).toContain("Test task");
       expect(result.data.type).toBe("single");
     }
+    // Verify started_at is set after claim
+    const claimed = db.getFlight(flights[0].id)!;
+    expect(claimed.started_at).toBeDefined();
+    expect(claimed.started_at).not.toBeNull();
   });
 
   it("includes cell context for loop flights", () => {

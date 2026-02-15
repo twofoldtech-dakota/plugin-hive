@@ -338,3 +338,58 @@ describe("utility queries", () => {
     expect(exhausted).toHaveLength(1);
   });
 });
+
+// ── Epoch ────────────────────────────────────────────────────────
+
+describe("epoch", () => {
+  it("starts at 0", () => {
+    expect(db.getEpoch()).toBe(0);
+  });
+
+  it("increments on bump", () => {
+    const e1 = db.bumpEpoch();
+    expect(e1).toBe(1);
+    const e2 = db.bumpEpoch();
+    expect(e2).toBe(2);
+    expect(db.getEpoch()).toBe(2);
+  });
+});
+
+// ── Duration Queries ─────────────────────────────────────────────
+
+describe("duration queries", () => {
+  let swarmId: string;
+
+  beforeEach(() => {
+    seedBlueprint();
+    const swarm = db.createSwarm("test-bp", "Task");
+    swarmId = swarm.id;
+  });
+
+  it("getFlightDurations returns null when no timing data", () => {
+    db.insertFlight(swarmId, "f1", "test-bp_worker", 0, "input", "expects", "pending", 2);
+    const durations = db.getFlightDurations(swarmId);
+    expect(durations).toHaveLength(1);
+    expect(durations[0].duration_seconds).toBeNull();
+  });
+
+  it("getFlightDurations computes duration when both timestamps set", () => {
+    const flight = db.insertFlight(swarmId, "f1", "test-bp_worker", 0, "input", "expects", "done", 2);
+    db.updateFlight(flight.id, { started_at: "2025-01-01 00:00:00", completed_at: "2025-01-01 00:05:00" });
+    const durations = db.getFlightDurations(swarmId);
+    expect(durations[0].duration_seconds).toBe(300);
+  });
+
+  it("getFlightElapsed returns null for flight without started_at", () => {
+    const flight = db.insertFlight(swarmId, "f1", "test-bp_worker", 0, "input", "expects", "pending", 2);
+    expect(db.getFlightElapsed(flight.id)).toBeNull();
+  });
+
+  it("getCellDurations returns results for cells", () => {
+    const cell = db.insertCell(swarmId, 0, "cell-1", "Title", "Desc", []);
+    db.updateCell(cell.id, { started_at: "2025-01-01 00:00:00", completed_at: "2025-01-01 00:02:00" });
+    const durations = db.getCellDurations(swarmId);
+    expect(durations).toHaveLength(1);
+    expect(durations[0].duration_seconds).toBe(120);
+  });
+});

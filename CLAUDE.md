@@ -27,8 +27,10 @@ Multi-agent swarm orchestration for Claude Code. Deploy specialized bees to auto
 | `/hive beekeeper` | Run health check (resets stuck flights) |
 | `/hive cells <N>` | List cells for swarm #N |
 | `/hive pollinate` | Trigger pollination cycle |
+| `/hive-drive <bp> <task>` | Autonomously drive a swarm start-to-finish |
+| `/hive-drive <N>` | Resume driving an existing buzzing swarm |
 
-**Shortcuts:** `/hive-swarm`, `/hive-status`, `/hive-install`
+**Shortcuts:** `/hive-swarm`, `/hive-status`, `/hive-install`, `/hive-drive`
 
 ## Bundled Blueprints
 
@@ -53,7 +55,7 @@ Multi-agent swarm orchestration for Claude Code. Deploy specialized bees to auto
 
 ## Architecture
 
-- **MCP Server** provides 17 tools (`hive_*`) for swarm orchestration
+- **MCP Server** provides 19 tools (`hive_*`) for swarm orchestration
 - **SQLite DB** at `~/.plugin-hive/hive.db` stores all state
 - **Flight pipeline** advances automatically as bees complete work
 - **Loop flights** iterate over cells (e.g., implementing each sub-task)

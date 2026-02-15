@@ -97,6 +97,83 @@ export const LOOP_BLUEPRINT: BlueprintSpec = {
 };
 
 /**
+ * A blueprint with DAG (parallel) flights for testing depends_on logic.
+ */
+export const DAG_BLUEPRINT: BlueprintSpec = {
+  id: "test-dag",
+  name: "DAG Blueprint",
+  version: 1,
+  bees: [
+    {
+      id: "queen",
+      role: "analysis",
+      chamber: { base_dir: "queen", files: {} },
+    },
+    {
+      id: "worker",
+      role: "coding",
+      chamber: { base_dir: "worker", files: {} },
+    },
+    {
+      id: "builder",
+      role: "testing",
+      chamber: { base_dir: "builder", files: {} },
+    },
+    {
+      id: "inspector",
+      role: "verification",
+      chamber: { base_dir: "inspector", files: {} },
+    },
+  ],
+  flights: [
+    {
+      id: "decompose",
+      bee: "queen",
+      type: "single",
+      input: "Decompose: {{task}}",
+      expects: "CELLS_JSON: array",
+      max_retries: 2,
+    },
+    {
+      id: "implement",
+      bee: "worker",
+      type: "single",
+      depends_on: ["decompose"],
+      input: "Implement: {{task}}",
+      expects: "STATUS: done",
+      max_retries: 2,
+    },
+    {
+      id: "test",
+      bee: "builder",
+      type: "single",
+      depends_on: ["implement"],
+      input: "Test: {{task}}",
+      expects: "STATUS: pass",
+      max_retries: 2,
+    },
+    {
+      id: "lint",
+      bee: "inspector",
+      type: "single",
+      depends_on: ["implement"],
+      input: "Lint: {{task}}",
+      expects: "STATUS: pass",
+      max_retries: 2,
+    },
+    {
+      id: "finalize",
+      bee: "worker",
+      type: "single",
+      depends_on: ["test", "lint"],
+      input: "Finalize: {{task}}",
+      expects: "PR_URL: url",
+      max_retries: 1,
+    },
+  ],
+};
+
+/**
  * Reset the test database by closing and deleting the DB file, then re-initializing.
  */
 export function freshDb(): void {
@@ -141,11 +218,28 @@ export function seedSwarm(
     }
   }
 
+  // Detect DAG mode
+  const pipelineFlights = blueprintSpec.flights.filter(f => !verifyFlightIds.has(f.id));
+  const isDAG = pipelineFlights.some(f => f.depends_on && f.depends_on.length > 0);
+  const dagRoots = new Set<string>();
+  if (isDAG) {
+    for (const flight of pipelineFlights) {
+      if (!flight.depends_on || flight.depends_on.length === 0) {
+        dagRoots.add(flight.id);
+      }
+    }
+  }
+
   let flightIndex = 0;
   for (const flight of blueprintSpec.flights) {
     if (verifyFlightIds.has(flight.id)) continue;
     const beeId = `${blueprintSpec.id}_${flight.bee}`;
-    const status = flightIndex === 0 ? "pending" as const : "waiting" as const;
+    let status: "pending" | "waiting";
+    if (isDAG) {
+      status = dagRoots.has(flight.id) ? "pending" : "waiting";
+    } else {
+      status = flightIndex === 0 ? "pending" : "waiting";
+    }
     db.insertFlight(
       swarm.id,
       flight.id,
@@ -157,6 +251,7 @@ export function seedSwarm(
       flight.max_retries ?? 2,
       flight.type ?? "single",
       flight.loop ? JSON.stringify(flight.loop) : undefined,
+      flight.depends_on,
     );
     flightIndex++;
   }

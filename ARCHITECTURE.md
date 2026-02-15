@@ -1505,4 +1505,41 @@ Like antfarm, each bee gets a fresh context per flight. This prevents context wi
 
 ---
 
+---
+
+## Phase 8: Autonomous Coordinator & Parallel Flights
+
+### 8.1 Coordinator Skill (`/hive-drive`)
+
+The `/hive-drive` skill closes the automation gap. Instead of the user manually calling `/hive pollinate` repeatedly, `/hive-drive` enters a wave-based loop that autonomously drives a swarm from start to finish:
+
+1. Pollinate to discover ready work
+2. Spawn bee subagents as background `Task` agents
+3. Monitor via `TaskOutput` until all bees complete
+4. Check swarm status via `hive_swarm_summary`
+5. Repeat until completed, failed, or safety limits hit (50 waves)
+
+### 8.2 Parallel Flight DAG
+
+Blueprints can now declare flight dependencies via `depends_on: string[]`. When present, the pipeline switches from sequential to DAG mode:
+
+- Multiple flights whose dependencies are all "done" become "pending" simultaneously
+- Blueprints without `depends_on` use the existing sequential logic (backward compatible)
+- Kahn's algorithm validates no cycles exist at blueprint install time
+
+### 8.3 Flight Duration Tracking
+
+`started_at` and `completed_at` columns on flights and cells tables. Set on claim/complete/fail transitions. Duration computed via `julianday()` arithmetic. Exposed via Observatory timing endpoint and `hive_swarm_summary`.
+
+### 8.4 Epoch-Based Change Detection
+
+A monotonic epoch counter in `hive_meta` table. Every state mutation bumps the epoch. The coordinator calls `hive_check_epoch` before expensive queries — if unchanged, skip the poll cycle.
+
+### 8.5 New MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `hive_swarm_summary` | Compact status for coordinator loop (pipeline, cells, active bees, epoch) |
+| `hive_check_epoch` | Monotonic counter for change detection |
+
 *This architecture document is the foundation for building Plugin Hive. Each section maps directly to implementation work in the phased plan above.*

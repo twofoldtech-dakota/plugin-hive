@@ -141,6 +141,35 @@ function migrate(db: DatabaseSync): void {
   if (!cols.some(c => c.name === "verify_meta")) {
     db.exec("ALTER TABLE flights ADD COLUMN verify_meta TEXT");
   }
+
+  // Migration: add depends_on, started_at, completed_at to flights (Phase 8)
+  if (!cols.some(c => c.name === "depends_on")) {
+    db.exec("ALTER TABLE flights ADD COLUMN depends_on TEXT");
+  }
+  if (!cols.some(c => c.name === "started_at")) {
+    db.exec("ALTER TABLE flights ADD COLUMN started_at TEXT");
+  }
+  if (!cols.some(c => c.name === "completed_at")) {
+    db.exec("ALTER TABLE flights ADD COLUMN completed_at TEXT");
+  }
+
+  // Migration: add started_at, completed_at to cells (Phase 8)
+  const cellCols = db.prepare("PRAGMA table_info(cells)").all() as Array<{ name: string }>;
+  if (!cellCols.some(c => c.name === "started_at")) {
+    db.exec("ALTER TABLE cells ADD COLUMN started_at TEXT");
+  }
+  if (!cellCols.some(c => c.name === "completed_at")) {
+    db.exec("ALTER TABLE cells ADD COLUMN completed_at TEXT");
+  }
+
+  // Migration: hive_meta table for epoch-based change detection (Phase 8)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS hive_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+    INSERT OR IGNORE INTO hive_meta (key, value) VALUES ('epoch', '0');
+  `);
 }
 
 // ── Blueprints ───────────────────────────────────────────────────────
@@ -292,13 +321,15 @@ export function insertFlight(
   maxRetries: number,
   type: "single" | "loop" = "single",
   loopConfig?: string,
+  dependsOn?: string[],
 ): FlightRecord {
   const db = getDb();
   const id = randomUUID();
+  const dependsOnJson = dependsOn && dependsOn.length > 0 ? JSON.stringify(dependsOn) : null;
   db.prepare(
-    `INSERT INTO flights (id, swarm_id, flight_id, bee_id, flight_index, input_template, expects, status, max_retries, type, loop_config)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, swarmId, flightId, beeId, flightIndex, inputTemplate, expects, status, maxRetries, type, loopConfig ?? null);
+    `INSERT INTO flights (id, swarm_id, flight_id, bee_id, flight_index, input_template, expects, status, max_retries, type, loop_config, depends_on)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, swarmId, flightId, beeId, flightIndex, inputTemplate, expects, status, maxRetries, type, loopConfig ?? null, dependsOnJson);
   return getFlight(id)!;
 }
 
@@ -372,9 +403,9 @@ export function claimFlightForBee(beeId: string): FlightRecord | undefined {
   if (result) {
     const flight = row<FlightRecord>(result);
     db.prepare(
-      "UPDATE flights SET status = 'in_flight', updated_at = datetime('now') WHERE id = ?",
+      "UPDATE flights SET status = 'in_flight', started_at = COALESCE(started_at, datetime('now')), updated_at = datetime('now') WHERE id = ?",
     ).run(flight.id);
-    return { ...flight, status: "in_flight" };
+    return { ...flight, status: "in_flight", started_at: flight.started_at ?? new Date().toISOString().replace("T", " ").slice(0, 19) };
   }
   return undefined;
 }
@@ -384,7 +415,7 @@ export function updateFlight(
   updates: Partial<
     Pick<
       FlightRecord,
-      "status" | "output" | "retry_count" | "current_cell_id" | "abandoned_count" | "verify_meta"
+      "status" | "output" | "retry_count" | "current_cell_id" | "abandoned_count" | "verify_meta" | "started_at" | "completed_at"
     >
   >,
 ): void {
@@ -415,6 +446,14 @@ export function updateFlight(
   if (updates.verify_meta !== undefined) {
     sets.push("verify_meta = ?");
     params.push(updates.verify_meta);
+  }
+  if (updates.started_at !== undefined) {
+    sets.push("started_at = ?");
+    params.push(updates.started_at);
+  }
+  if (updates.completed_at !== undefined) {
+    sets.push("completed_at = ?");
+    params.push(updates.completed_at);
   }
 
   params.push(id);
@@ -492,7 +531,7 @@ export function getNextPendingCell(swarmId: string): CellRecord | undefined {
 
 export function updateCell(
   id: string,
-  updates: Partial<Pick<CellRecord, "status" | "output" | "retry_count">>,
+  updates: Partial<Pick<CellRecord, "status" | "output" | "retry_count" | "started_at" | "completed_at">>,
 ): void {
   const db = getDb();
   const sets: string[] = ["updated_at = datetime('now')"];
@@ -509,6 +548,14 @@ export function updateCell(
   if (updates.retry_count !== undefined) {
     sets.push("retry_count = ?");
     params.push(updates.retry_count);
+  }
+  if (updates.started_at !== undefined) {
+    sets.push("started_at = ?");
+    params.push(updates.started_at);
+  }
+  if (updates.completed_at !== undefined) {
+    sets.push("completed_at = ?");
+    params.push(updates.completed_at);
   }
 
   params.push(id);
@@ -575,7 +622,7 @@ export function getStuckFlights(timeoutMinutes: number = 35): FlightRecord[] {
     db.prepare(
       `SELECT * FROM flights
        WHERE status = 'in_flight'
-       AND updated_at < datetime('now', '-' || ? || ' minutes')`,
+       AND COALESCE(started_at, updated_at) < datetime('now', '-' || ? || ' minutes')`,
     ).all(timeoutMinutes),
   );
 }
@@ -618,6 +665,59 @@ export function getExhaustedFlights(): FlightRecord[] {
        AND s.status = 'buzzing'`,
     ).all(),
   );
+}
+
+// ── Epoch (change detection) ────────────────────────────────────────
+
+export function bumpEpoch(): number {
+  const db = getDb();
+  db.prepare("UPDATE hive_meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'epoch'").run();
+  const result = db.prepare("SELECT value FROM hive_meta WHERE key = 'epoch'").get() as { value: string } | undefined;
+  return result ? parseInt(result.value, 10) : 0;
+}
+
+export function getEpoch(): number {
+  const db = getDb();
+  const result = db.prepare("SELECT value FROM hive_meta WHERE key = 'epoch'").get() as { value: string } | undefined;
+  return result ? parseInt(result.value, 10) : 0;
+}
+
+// ── Duration Queries ────────────────────────────────────────────────
+
+export function getFlightDurations(swarmId: string): Array<{ flight_id: string; status: string; duration_seconds: number | null }> {
+  const db = getDb();
+  return db.prepare(
+    `SELECT flight_id, status,
+       CASE WHEN started_at IS NOT NULL AND completed_at IS NOT NULL
+         THEN ROUND((julianday(completed_at) - julianday(started_at)) * 86400)
+         ELSE NULL END as duration_seconds
+     FROM flights WHERE swarm_id = ? AND verify_meta IS NULL ORDER BY flight_index ASC`,
+  ).all(swarmId) as Array<{ flight_id: string; status: string; duration_seconds: number | null }>;
+}
+
+export function getCellDurations(swarmId: string): Array<{ cell_id: string; status: string; duration_seconds: number | null }> {
+  const db = getDb();
+  return db.prepare(
+    `SELECT cell_id, status,
+       CASE WHEN started_at IS NOT NULL AND completed_at IS NOT NULL
+         THEN ROUND((julianday(completed_at) - julianday(started_at)) * 86400)
+         ELSE NULL END as duration_seconds
+     FROM cells WHERE swarm_id = ? ORDER BY cell_index ASC`,
+  ).all(swarmId) as Array<{ cell_id: string; status: string; duration_seconds: number | null }>;
+}
+
+export function getFlightElapsed(flightUuid: string): number | null {
+  const db = getDb();
+  const result = db.prepare(
+    `SELECT CASE
+       WHEN started_at IS NOT NULL AND completed_at IS NOT NULL
+         THEN ROUND((julianday(completed_at) - julianday(started_at)) * 86400)
+       WHEN started_at IS NOT NULL
+         THEN ROUND((julianday(datetime('now')) - julianday(started_at)) * 86400)
+       ELSE NULL END as elapsed
+     FROM flights WHERE id = ?`,
+  ).get(flightUuid) as { elapsed: number | null } | undefined;
+  return result?.elapsed ?? null;
 }
 
 /** Close the database connection */

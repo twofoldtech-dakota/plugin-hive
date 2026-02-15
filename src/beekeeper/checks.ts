@@ -7,13 +7,18 @@ import type { CheckResult } from "../types.js";
  */
 export function checkStuckFlights(timeoutMinutes: number = 35): CheckResult[] {
   const stuck = db.getStuckFlights(timeoutMinutes);
-  return stuck.map((f) => ({
-    issue: `Flight "${f.flight_id}" stuck in_flight for ${timeoutMinutes}+ minutes`,
-    severity: "warning" as const,
-    entity_type: "flight" as const,
-    entity_id: f.id,
-    remediation: "resetStuckFlight",
-  }));
+  return stuck.map((f) => {
+    // Use started_at for smarter severity: >60 min is critical
+    const elapsed = f.started_at ? db.getFlightElapsed(f.id) : null;
+    const severity = elapsed !== null && elapsed > 3600 ? "critical" as const : "warning" as const;
+    return {
+      issue: `Flight "${f.flight_id}" stuck in_flight for ${timeoutMinutes}+ minutes`,
+      severity,
+      entity_type: "flight" as const,
+      entity_id: f.id,
+      remediation: "resetStuckFlight",
+    };
+  });
 }
 
 /**

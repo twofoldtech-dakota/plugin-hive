@@ -1,6 +1,7 @@
 import * as db from "../db.js";
 import { emitEvent } from "../lib/events.js";
 import { logger } from "../lib/logger.js";
+import { nowUtc } from "../lib/time.js";
 
 export type FailFlightResult =
   | { success: true; message: string; retrying: boolean }
@@ -43,8 +44,10 @@ export function failFlight(flightId: string, error: string): FailFlightResult {
   }
 
   // No retries left — fail the flight and the swarm
-  db.updateFlight(flightId, { status: "failed", output: error, current_cell_id: null });
+  const now = nowUtc();
+  db.updateFlight(flightId, { status: "failed", output: error, current_cell_id: null, completed_at: now });
   db.updateSwarm(flight.swarm_id, { status: "failed" });
+  db.bumpEpoch();
   emitEvent({ eventType: "flight.failed", swarmId: flight.swarm_id, payload: { flight_id: flight.flight_id, error, retrying: false } });
   emitEvent({ eventType: "swarm.failed", swarmId: flight.swarm_id, payload: { reason: `Flight "${flight.flight_id}" exhausted retries` } });
 
