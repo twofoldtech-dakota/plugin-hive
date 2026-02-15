@@ -236,3 +236,36 @@ export interface BeeReadiness {
 export interface AdvanceResult {
   action: "completed" | "advanced" | "none";
 }
+
+// ── Beekeeper ────────────────────────────────────────────────────────
+
+export interface CheckResult {
+  issue: string;
+  severity: "warning" | "critical";
+  entity_type: "flight" | "swarm" | "scheduler";
+  entity_id: string;
+  remediation?: string;
+}
+
+export interface RemediationResult {
+  action: string;
+  entity_id: string;
+  success: boolean;
+  detail: string;
+}
+
+export interface BeekeeperReport {
+  summary: string;
+  issues_found: number;
+  actions_taken: number;
+  findings: string[];
+}
+
+// ── Observatory ──────────────────────────────────────────────────────
+
+export interface ObservatoryStatus {
+  running: boolean;
+  pid?: number;
+  port?: number;
+  url?: string;
+}

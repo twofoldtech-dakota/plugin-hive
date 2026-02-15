@@ -1,7 +1,7 @@
 ---
 name: hive
 description: "Manage Plugin Hive swarms, blueprints, and bees"
-allowed-tools: Read, Grep, Glob, mcp__hive__hive_blueprint_list, mcp__hive__hive_blueprint_install, mcp__hive__hive_blueprint_uninstall, mcp__hive__hive_swarm_start, mcp__hive__hive_swarm_status, mcp__hive__hive_swarm_list, mcp__hive__hive_swarm_stop, mcp__hive__hive_swarm_resume, mcp__hive__hive_flight_peek, mcp__hive__hive_flight_claim, mcp__hive__hive_flight_complete, mcp__hive__hive_flight_fail, mcp__hive__hive_pollinate, mcp__hive__hive_cell_list, mcp__hive__hive_beekeeper_check, mcp__hive__hive_beekeeper_status
+allowed-tools: Read, Grep, Glob, mcp__hive__hive_blueprint_list, mcp__hive__hive_blueprint_install, mcp__hive__hive_blueprint_uninstall, mcp__hive__hive_swarm_start, mcp__hive__hive_swarm_status, mcp__hive__hive_swarm_list, mcp__hive__hive_swarm_stop, mcp__hive__hive_swarm_resume, mcp__hive__hive_flight_peek, mcp__hive__hive_flight_claim, mcp__hive__hive_flight_complete, mcp__hive__hive_flight_fail, mcp__hive__hive_pollinate, mcp__hive__hive_cell_list, mcp__hive__hive_beekeeper_check, mcp__hive__hive_beekeeper_status, mcp__hive__hive_observatory_start, mcp__hive__hive_observatory_stop, mcp__hive__hive_observatory_status
 ---
 
 # /hive — Plugin Hive Management
@@ -27,6 +27,7 @@ Parse the first word of `$ARGUMENTS` as the sub-command. If no arguments are giv
 | `beekeeper` | Run a health check (see **beekeeper**) |
 | `cells <number\|id>` | List cells for a swarm (see **cells**) |
 | `pollinate [swarm_id]` | Trigger a pollination cycle (see **pollinate**) |
+| `observatory [start\|stop\|status]` | Manage the Observatory dashboard (see **observatory**) |
 
 ---
 
@@ -128,6 +129,17 @@ Trigger a pollination cycle.
 1. If a swarm_id is given, call `mcp__hive__hive_pollinate` with it.
 2. If no argument, call `mcp__hive__hive_pollinate` without a swarm_id (polls all swarms).
 3. Report spawn requests: which bees need to be spawned and for which flights.
+
+### observatory
+
+Manage the Observatory dashboard web UI.
+
+1. Parse the argument after `observatory` as the action: `start`, `stop`, or `status`.
+2. If no action is given, call `mcp__hive__hive_observatory_status` to show current state.
+3. Actions:
+   - `start [port]` — Call `mcp__hive__hive_observatory_start` with optional port. Report the URL on success.
+   - `stop` — Call `mcp__hive__hive_observatory_stop`. Confirm shutdown.
+   - `status` — Call `mcp__hive__hive_observatory_status`. Report running state, PID, port, and URL.
 
 ---
 

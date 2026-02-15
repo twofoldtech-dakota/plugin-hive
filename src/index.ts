@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { initDb } from "./db.js";
@@ -18,6 +18,8 @@ import { completeFlight } from "./flight/complete.js";
 import { failFlight } from "./flight/fail.js";
 import { scheduler } from "./pollinator/scheduler.js";
 import { pollinate } from "./pollinator/poll.js";
+import { runBeekeeperCheck } from "./beekeeper/monitor.js";
+import { startObservatory, stopObservatory, getObservatoryStatus } from "./observatory/daemon.js";
 import type { BlueprintSpec } from "./types.js";
 
 // ── Initialize ───────────────────────────────────────────────────────
@@ -352,43 +354,11 @@ server.tool(
   "Run a health check on the hive",
   {},
   async () => {
-    let issuesFound = 0;
-    let actionsTaken = 0;
-    const findings: string[] = [];
-
-    const stuck = db.getStuckFlights(35);
-    for (const flight of stuck) {
-      issuesFound++;
-      if (flight.abandoned_count < 5) {
-        db.updateFlight(flight.id, {
-          status: "pending",
-          abandoned_count: flight.abandoned_count + 1,
-          current_cell_id: null,
-        });
-        actionsTaken++;
-        findings.push(`Reset stuck flight "${flight.flight_id}" (abandoned ${flight.abandoned_count + 1}/5)`);
-      } else {
-        findings.push(`Flight "${flight.flight_id}" exhausted abandon limit`);
-      }
-    }
-
-    const stalled = db.getStalledSwarms(30);
-    for (const swarm of stalled) {
-      issuesFound++;
-      findings.push(`Swarm #${swarm.swarm_number} stalled (no progress in 30+ minutes)`);
-    }
-
-    const summary = issuesFound === 0
-      ? "Hive is healthy. All bees buzzing normally."
-      : `Found ${issuesFound} issue(s), took ${actionsTaken} action(s).`;
-
-    db.insertBeekeeperCheck(issuesFound, actionsTaken, summary, { findings });
-    logger.info("Beekeeper check completed", { issuesFound, actionsTaken });
-
+    const report = runBeekeeperCheck();
     return {
       content: [{
         type: "text",
-        text: JSON.stringify({ summary, issues_found: issuesFound, actions_taken: actionsTaken, findings }, null, 2),
+        text: JSON.stringify(report, null, 2),
       }],
     };
   },
@@ -402,6 +372,54 @@ server.tool(
     const checks = db.getRecentBeekeeperChecks(10);
     return {
       content: [{ type: "text", text: JSON.stringify(checks, null, 2) }],
+    };
+  },
+);
+
+// ── Observatory Tools ────────────────────────────────────────────────
+
+server.tool(
+  "hive_observatory_start",
+  "Start the Observatory dashboard HTTP server",
+  { port: z.number().optional().describe("Port to listen on (default: 4242)") },
+  async ({ port }) => {
+    try {
+      const status = await startObservatory(port);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({ message: `Observatory running at ${status.url}`, ...status }, null, 2),
+        }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Failed to start Observatory: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  "hive_observatory_stop",
+  "Stop the Observatory dashboard HTTP server",
+  {},
+  async () => {
+    const status = stopObservatory();
+    return {
+      content: [{ type: "text", text: JSON.stringify({ message: "Observatory stopped", ...status }) }],
+    };
+  },
+);
+
+server.tool(
+  "hive_observatory_status",
+  "Check if the Observatory dashboard is running",
+  {},
+  async () => {
+    const status = getObservatoryStatus();
+    return {
+      content: [{ type: "text", text: JSON.stringify(status, null, 2) }],
     };
   },
 );
@@ -440,6 +458,87 @@ server.resource(
           name: b.name,
           version: b.version,
         })), null, 2),
+      }],
+    };
+  },
+);
+
+// ── Resource Templates ──────────────────────────────────────────────
+
+server.resource(
+  "swarm-status",
+  new ResourceTemplate("hive://swarm/{id}/status", {
+    list: async () => {
+      const buzzing = db.listSwarms({ status: "buzzing" });
+      return {
+        resources: buzzing.map(s => ({
+          uri: `hive://swarm/${s.id}/status`,
+          name: `Swarm #${s.swarm_number} status`,
+        })),
+      };
+    },
+  }),
+  async (uri, variables) => {
+    const id = String(variables.id);
+    const swarm = db.findSwarm(id);
+    if (!swarm) {
+      return { contents: [{ uri: uri.href, text: JSON.stringify({ error: "Swarm not found" }) }] };
+    }
+    const flights = db.getFlightsForSwarm(swarm.id);
+    const cells = db.getCellsForSwarm(swarm.id);
+    return {
+      contents: [{
+        uri: uri.href,
+        text: JSON.stringify({ swarm, flights, cells }, null, 2),
+      }],
+    };
+  },
+);
+
+server.resource(
+  "swarm-nectar",
+  new ResourceTemplate("hive://swarm/{id}/nectar", {
+    list: async () => {
+      const buzzing = db.listSwarms({ status: "buzzing" });
+      return {
+        resources: buzzing.map(s => ({
+          uri: `hive://swarm/${s.id}/nectar`,
+          name: `Swarm #${s.swarm_number} nectar`,
+        })),
+      };
+    },
+  }),
+  async (uri, variables) => {
+    const id = String(variables.id);
+    const swarm = db.findSwarm(id);
+    if (!swarm) {
+      return { contents: [{ uri: uri.href, text: JSON.stringify({ error: "Swarm not found" }) }] };
+    }
+    const nectar = JSON.parse(swarm.nectar);
+    return {
+      contents: [{
+        uri: uri.href,
+        text: JSON.stringify(nectar, null, 2),
+      }],
+    };
+  },
+);
+
+server.resource(
+  "beekeeper-health",
+  "hive://beekeeper/health",
+  async () => {
+    const checks = db.getRecentBeekeeperChecks(1);
+    const stuck = db.getStuckFlights(35);
+    const stalled = db.getStalledSwarms(30);
+    return {
+      contents: [{
+        uri: "hive://beekeeper/health",
+        text: JSON.stringify({
+          latest_check: checks[0] ?? null,
+          current_stuck_flights: stuck.length,
+          current_stalled_swarms: stalled.length,
+        }, null, 2),
       }],
     };
   },

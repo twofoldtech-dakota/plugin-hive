@@ -560,6 +560,35 @@ export function getStalledSwarms(minutesSinceUpdate: number = 30): SwarmRecord[]
   );
 }
 
+export function getZombieSwarms(): SwarmRecord[] {
+  const db = getDb();
+  return rows<SwarmRecord>(
+    db.prepare(
+      `SELECT s.* FROM swarms s
+       WHERE s.status = 'buzzing'
+       AND NOT EXISTS (
+         SELECT 1 FROM flights f
+         WHERE f.swarm_id = s.id
+         AND f.verify_meta IS NULL
+         AND f.status NOT IN ('done', 'failed')
+       )`,
+    ).all(),
+  );
+}
+
+export function getExhaustedFlights(): FlightRecord[] {
+  const db = getDb();
+  return rows<FlightRecord>(
+    db.prepare(
+      `SELECT f.* FROM flights f
+       JOIN swarms s ON f.swarm_id = s.id
+       WHERE f.abandoned_count >= 5
+       AND f.status != 'failed'
+       AND s.status = 'buzzing'`,
+    ).all(),
+  );
+}
+
 /** Close the database connection */
 export function closeDb(): void {
   if (_db) {
