@@ -127,6 +127,15 @@ function migrate(db: DatabaseSync): void {
     );
   `);
 
+  // Indexes for common query patterns
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_flights_bee_status ON flights(bee_id, status);
+    CREATE INDEX IF NOT EXISTS idx_flights_swarm_id ON flights(swarm_id);
+    CREATE INDEX IF NOT EXISTS idx_cells_swarm_status ON cells(swarm_id, status);
+    CREATE INDEX IF NOT EXISTS idx_swarms_status ON swarms(status);
+    CREATE INDEX IF NOT EXISTS idx_events_swarm_id ON events(swarm_id, created_at);
+  `);
+
   // Migration: add verify_meta column to flights (idempotent)
   const cols = db.prepare("PRAGMA table_info(flights)").all() as Array<{ name: string }>;
   if (!cols.some(c => c.name === "verify_meta")) {
@@ -324,6 +333,28 @@ export function peekFlightsForBee(beeId: string): number {
     )
     .get(beeId);
   return row<{ count: number }>(result).count;
+}
+
+export function peekFlightsForBees(beeIds: string[]): Map<string, number> {
+  const db = getDb();
+  const map = new Map<string, number>();
+  for (const id of beeIds) map.set(id, 0);
+  if (beeIds.length === 0) return map;
+
+  const placeholders = beeIds.map(() => "?").join(",");
+  const results = db
+    .prepare(
+      `SELECT f.bee_id, COUNT(*) as count FROM flights f
+       JOIN swarms s ON f.swarm_id = s.id
+       WHERE f.bee_id IN (${placeholders}) AND f.status = 'pending' AND s.status = 'buzzing'
+       GROUP BY f.bee_id`,
+    )
+    .all(...beeIds) as Array<{ bee_id: string; count: number }>;
+
+  for (const r of results) {
+    map.set(r.bee_id, r.count);
+  }
+  return map;
 }
 
 export function claimFlightForBee(beeId: string): FlightRecord | undefined {

@@ -57,11 +57,15 @@ export class WaggleDanceScheduler {
 
   /**
    * Refresh readiness by peeking all registered bees.
-   * Uses cheap COUNT queries via db.peekFlightsForBee.
+   * Uses a single batch COUNT query via db.peekFlightsForBees.
    */
   refreshReadiness(): void {
-    for (const [key, entry] of this.readiness) {
-      entry.pendingCount = db.peekFlightsForBee(entry.beeId);
+    const beeIds = Array.from(this.readiness.values()).map(e => e.beeId);
+    if (beeIds.length === 0) return;
+
+    const counts = db.peekFlightsForBees(beeIds);
+    for (const [_key, entry] of this.readiness) {
+      entry.pendingCount = counts.get(entry.beeId) ?? 0;
     }
   }
 

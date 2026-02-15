@@ -4,6 +4,7 @@ import { advancePipeline } from "../pipeline/advance.js";
 import { parseCellsJson } from "../cell/parse.js";
 import { insertCellsFromParsed } from "../cell/manage.js";
 import { logger } from "../lib/logger.js";
+import { safeJsonParse } from "../lib/json.js";
 import type { LoopConfig, BlueprintSpec, FlightRecord } from "../types.js";
 
 export type CompleteFlightResult =
@@ -21,7 +22,7 @@ export function completeFlight(flightId: string, output: string): CompleteFlight
 
   // ── Parse KEY: value lines from output into nectar ──────────────
   const swarm = db.getSwarm(flight.swarm_id)!;
-  const nectar = JSON.parse(swarm.nectar) as Record<string, string>;
+  const nectar = safeJsonParse<Record<string, string>>(swarm.nectar, {});
   const lines = output.split("\n");
   for (const line of lines) {
     const match = line.match(/^([A-Z_]+):\s*(.+)$/);
@@ -79,7 +80,7 @@ function handleLoopCellCompletion(
   nectar: Record<string, string>,
 ): CompleteFlightResult {
   const loopConfig: LoopConfig | null = flight.loop_config
-    ? JSON.parse(flight.loop_config)
+    ? safeJsonParse<LoopConfig | null>(flight.loop_config, null)
     : null;
 
   const verifyEach = loopConfig?.verify_each ?? false;
@@ -161,7 +162,8 @@ function createVerificationFlight(
   const bp = db.getBlueprint(swarm.blueprint_id);
   if (!bp) return;
 
-  const blueprintSpec: BlueprintSpec = JSON.parse(bp.spec);
+  const blueprintSpec = safeJsonParse<BlueprintSpec | null>(bp.spec, null);
+  if (!blueprintSpec) return;
   const templateFlight = blueprintSpec.flights.find(f => f.id === verifyFlightId);
   if (!templateFlight) {
     logger.warn("Verify flight template not found in blueprint", {
@@ -220,10 +222,14 @@ function handleVerificationCompletion(
   output: string,
   nectar: Record<string, string>,
 ): CompleteFlightResult {
-  const meta = JSON.parse(flight.verify_meta!) as {
-    parent_flight_id: string;
-    cell_id: string;
-  };
+  const meta = safeJsonParse<{ parent_flight_id: string; cell_id: string } | null>(
+    flight.verify_meta ?? "",
+    null,
+  );
+  if (!meta) {
+    db.updateFlight(flight.id, { status: "done", output });
+    return { success: true, message: "Verification flight completed (corrupt metadata)" };
+  }
 
   // Parse STATUS from inspector output
   const statusMatch = output.match(/^STATUS:\s*(\w+)/m);

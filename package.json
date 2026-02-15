@@ -1,11 +1,23 @@
 {
   "name": "plugin-hive",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Multi-agent workflow orchestration for Claude Code",
   "type": "module",
   "engines": {
     "node": ">=22.0.0"
   },
+  "files": [
+    "dist",
+    "blueprints",
+    "skills",
+    "hooks",
+    "agents",
+    ".claude-plugin",
+    ".mcp.json",
+    "CLAUDE.md",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",

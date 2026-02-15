@@ -5,6 +5,7 @@ import { initDb } from "./db.js";
 import * as db from "./db.js";
 import { discoverBundledBlueprints, loadBlueprint } from "./blueprint/loader.js";
 import { logger } from "./lib/logger.js";
+import { safeJsonParse } from "./lib/json.js";
 
 // ── Module imports ───────────────────────────────────────────────────
 
@@ -32,8 +33,8 @@ const buzzingSwarms = db.listSwarms({ status: "buzzing" });
 for (const swarm of buzzingSwarms) {
   const bp = db.getBlueprint(swarm.blueprint_id);
   if (bp) {
-    const spec: BlueprintSpec = JSON.parse(bp.spec);
-    scheduler.registerSwarm(swarm.id, spec);
+    const spec = safeJsonParse<BlueprintSpec | null>(bp.spec, null);
+    if (spec) scheduler.registerSwarm(swarm.id, spec);
   }
 }
 if (buzzingSwarms.length > 0) {
@@ -44,6 +45,21 @@ const server = new McpServer({
   name: "hive",
   version: "0.2.0",
 });
+
+/** Wrap an MCP tool handler to catch unexpected errors and return isError responses */
+function errorBoundary<T>(
+  fn: (args: T) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>,
+): (args: T) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> {
+  return async (args: T) => {
+    try {
+      return await fn(args);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error("Tool error", { error: message });
+      return { content: [{ type: "text" as const, text: `Internal error: ${message}` }], isError: true };
+    }
+  };
+}
 
 // ── Blueprint Tools ──────────────────────────────────────────────────
 
@@ -126,8 +142,8 @@ server.tool(
     // Register with scheduler
     const bp = db.getBlueprint(blueprint_id);
     if (bp) {
-      const spec: BlueprintSpec = JSON.parse(bp.spec);
-      scheduler.registerSwarm(result.data.id, spec);
+      const spec = safeJsonParse<BlueprintSpec | null>(bp.spec, null);
+      if (spec) scheduler.registerSwarm(result.data.id, spec);
     }
 
     return {
@@ -161,12 +177,12 @@ server.tool(
   "hive_swarm_list",
   "List all swarms with optional filters",
   {
-    status: z.string().optional().describe("Filter by status: buzzing, completed, failed, cancelled"),
+    status: z.enum(["buzzing", "paused", "blocked", "completed", "failed", "cancelled"]).optional().describe("Filter by status"),
     limit: z.number().optional().describe("Max number of swarms to return"),
   },
   async ({ status, limit }) => {
     const swarms = db.listSwarms({
-      status: status as any,
+      status,
       limit: limit ?? 20,
     });
     return {
@@ -214,8 +230,8 @@ server.tool(
     if (swarm && !scheduler.isRegistered(swarm_id)) {
       const bp = db.getBlueprint(swarm.blueprint_id);
       if (bp) {
-        const spec: BlueprintSpec = JSON.parse(bp.spec);
-        scheduler.registerSwarm(swarm_id, spec);
+        const spec = safeJsonParse<BlueprintSpec | null>(bp.spec, null);
+        if (spec) scheduler.registerSwarm(swarm_id, spec);
       }
     }
 
@@ -514,7 +530,7 @@ server.resource(
     if (!swarm) {
       return { contents: [{ uri: uri.href, text: JSON.stringify({ error: "Swarm not found" }) }] };
     }
-    const nectar = JSON.parse(swarm.nectar);
+    const nectar = safeJsonParse(swarm.nectar, {});
     return {
       contents: [{
         uri: uri.href,

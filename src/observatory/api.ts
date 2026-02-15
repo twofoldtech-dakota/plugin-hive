@@ -1,6 +1,9 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import * as db from "../db.js";
 import { DASHBOARD_HTML } from "./dashboard.js";
+import type { SwarmStatus } from "../types.js";
+
+const VALID_SWARM_STATUSES = new Set<string>(["buzzing", "paused", "blocked", "completed", "failed", "cancelled"]);
 
 /**
  * Handle an incoming HTTP request for the Observatory API.
@@ -25,10 +28,11 @@ export function handleRequest(req: IncomingMessage, res: ServerResponse): void {
 
     // GET /api/swarms
     if (path === "/api/swarms" && req.method === "GET") {
-      const status = url.searchParams.get("status") as any;
+      const statusParam = url.searchParams.get("status");
+      const status = statusParam && VALID_SWARM_STATUSES.has(statusParam) ? statusParam as SwarmStatus : undefined;
       const blueprint = url.searchParams.get("blueprint") ?? undefined;
       const swarms = db.listSwarms({
-        status: status || undefined,
+        status,
         blueprint_id: blueprint,
         limit: 50,
       });
