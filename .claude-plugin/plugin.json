@@ -1,0 +1,10 @@
+{
+  "name": "plugin-hive",
+  "description": "Multi-agent workflow orchestration for Claude Code. Deploy swarms of specialized AI bees to autonomously execute complex development workflows.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Dakota Smith"
+  },
+  "repository": "https://github.com/dakotasmith/plugin-hive",
+  "license": "MIT"
+}

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "hive": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/index.js"],
+      "env": {
+        "HIVE_DATA_DIR": "${HOME}/.plugin-hive",
+        "HIVE_PROJECT_DIR": "${CLAUDE_PROJECT_DIR}"
+      }
+    }
+  }
+}
