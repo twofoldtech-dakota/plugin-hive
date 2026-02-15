@@ -28,6 +28,7 @@ export interface BeeSpec {
 export interface LoopConfig {
   over: string;
   verify_each?: boolean;
+  verify_flight?: string; // references inspector flight ID template
   completion: "all_done";
 }
 
@@ -105,6 +106,7 @@ export interface FlightRecord {
   loop_config: string | null; // JSON string of LoopConfig
   current_cell_id: string | null;
   abandoned_count: number;
+  verify_meta: string | null; // JSON string for verification flight metadata
   created_at: string;
   updated_at: string;
 }
@@ -112,6 +114,7 @@ export interface FlightRecord {
 export type CellStatus =
   | "pending"
   | "in_progress"
+  | "verifying"
   | "done"
   | "failed";
 
@@ -182,11 +185,54 @@ export type HiveEventType =
   | "swarm.completed"
   | "swarm.failed"
   | "swarm.cancelled"
+  | "swarm.resumed"
   | "flight.ready"
   | "flight.claimed"
   | "flight.completed"
   | "flight.failed"
+  | "flight.inspector_created"
   | "cell.started"
   | "cell.completed"
+  | "cell.verifying"
   | "cell.failed"
   | "beekeeper.check";
+
+// ── Spawn Request (from pollinator) ─────────────────────────────────
+
+export interface SpawnRequest {
+  swarmId: string;
+  beeId: string;
+  flightId: string;
+  prompt: string;
+  model: string;
+  tools: string[];
+  disallowedTools: string[];
+  maxTurns: number;
+  cell?: {
+    id: string;
+    cellId: string;
+    title: string;
+  };
+}
+
+// ── Pollinate Result ────────────────────────────────────────────────
+
+export interface PollinateResult {
+  spawns: SpawnRequest[];
+  beesChecked: number;
+  beesWithWork: number;
+}
+
+// ── Bee Readiness (scheduler) ───────────────────────────────────────
+
+export interface BeeReadiness {
+  swarmId: string;
+  beeId: string;
+  pendingCount: number;
+}
+
+// ── Advance Result ──────────────────────────────────────────────────
+
+export interface AdvanceResult {
+  action: "completed" | "advanced" | "none";
+}

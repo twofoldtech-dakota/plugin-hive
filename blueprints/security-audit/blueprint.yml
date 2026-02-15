@@ -1,0 +1,143 @@
+id: security-audit
+name: "Security Audit"
+version: 1
+description: "Scan a codebase for vulnerabilities. Get back a prioritized report with fixes."
+
+polling:
+  model: haiku
+  timeout_seconds: 120
+
+bees:
+  - id: scout
+    name: "Scout Bee"
+    description: "Performs reconnaissance -- maps the attack surface and identifies security-critical areas"
+    role: analysis
+    model: sonnet
+    polling_model: haiku
+    timeout_seconds: 900
+    chamber:
+      base_dir: scout
+      files:
+        "IDENTITY.md": "bees/scout/IDENTITY.md"
+        "NATURE.md": "bees/scout/NATURE.md"
+
+  - id: guard
+    name: "Guard Bee"
+    description: "Scans for vulnerabilities and verifies security fixes"
+    role: scanning
+    model: sonnet
+    polling_model: haiku
+    timeout_seconds: 1200
+    chamber:
+      base_dir: guard
+      files:
+        "IDENTITY.md": "bees/guard/IDENTITY.md"
+        "NATURE.md": "bees/guard/NATURE.md"
+
+  - id: worker
+    name: "Worker Bee"
+    description: "Implements security fixes for identified vulnerabilities"
+    role: coding
+    model: sonnet
+    polling_model: haiku
+    timeout_seconds: 1800
+    chamber:
+      base_dir: worker
+      files:
+        "IDENTITY.md": "bees/worker/IDENTITY.md"
+        "NATURE.md": "bees/worker/NATURE.md"
+
+flights:
+  - id: recon
+    bee: scout
+    input: |
+      Security audit target: {{task}}
+
+      Perform reconnaissance on the codebase:
+      1. Map the project structure and identify entry points
+      2. Identify authentication and authorization boundaries
+      3. Locate data flows handling sensitive information
+      4. List third-party dependencies and their purposes
+      5. Identify areas with elevated security risk
+
+      Produce a structured attack surface analysis.
+    expects: "ATTACK_SURFACE: structured summary of entry points, auth boundaries, and risk areas"
+    max_retries: 2
+
+  - id: scan
+    bee: guard
+    input: |
+      Perform a security scan based on the reconnaissance findings.
+
+      Attack surface: {{attack_surface}}
+      Target: {{task}}
+
+      Scan for:
+      1. OWASP Top 10 vulnerabilities (injection, XSS, CSRF, etc.)
+      2. Hardcoded secrets, API keys, or credentials
+      3. Insecure dependencies (run npm audit or equivalent)
+      4. Missing input validation at system boundaries
+      5. Authentication/authorization flaws
+      6. Insecure configuration or debug settings
+      7. Data exposure in logs, errors, or API responses
+
+      Output a structured list of vulnerabilities as CELLS_JSON for remediation.
+    expects: "VULNERABILITIES_FOUND: count | CELLS_JSON: array of vulnerability cells with id, title, description, acceptance_criteria"
+    max_retries: 2
+
+  - id: remediate
+    bee: worker
+    type: loop
+    loop:
+      over: cells
+      verify_each: true
+      verify_flight: verify
+      completion: all_done
+    input: |
+      Fix security vulnerability: {{current_cell}}
+
+      Context from previous fixes: {{completed_cells}}
+      {{#inspect_feedback}}Guard feedback from previous attempt: {{inspect_feedback}}{{/inspect_feedback}}
+
+      Implement the security fix. Ensure:
+      - The vulnerability is fully addressed
+      - No new vulnerabilities are introduced
+      - Existing functionality is preserved
+    expects: "STATUS: done | FILES_CHANGED: list of modified files"
+    max_retries: 3
+
+  - id: verify
+    bee: guard
+    input: |
+      Verify the security fix for: {{verify_cell_title}}
+
+      Vulnerability description: {{verify_cell_description}}
+      Worker output: {{verify_cell_output}}
+      Fix criteria: {{verify_cell_criteria}}
+
+      Verify that:
+      1. The vulnerability is fully remediated
+      2. No new security issues were introduced
+      3. The fix follows security best practices
+    expects: "STATUS: pass/retry | FEEDBACK: security verification details"
+    max_retries: 2
+
+  - id: report
+    bee: scout
+    input: |
+      Generate a final security audit report.
+
+      Original target: {{task}}
+      Attack surface: {{attack_surface}}
+      Vulnerabilities found: {{vulnerabilities_found}}
+      Fixes applied: {{completed_cells}}
+
+      Produce a comprehensive security report summarizing:
+      1. Scope of the audit
+      2. Findings by severity
+      3. Remediation actions taken
+      4. Remaining risks or recommendations
+    expects: "REPORT: comprehensive security audit summary | STATUS: done"
+
+nectar:
+  project_dir: "."

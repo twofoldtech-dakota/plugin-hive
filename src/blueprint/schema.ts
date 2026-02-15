@@ -30,6 +30,7 @@ const BeeSpecSchema = z.object({
 const LoopConfigSchema = z.object({
   over: z.string().min(1),
   verify_each: z.boolean().optional(),
+  verify_flight: z.string().optional(),
   completion: z.literal("all_done"),
 });
 

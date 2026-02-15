@@ -1,0 +1,140 @@
+id: bug-fix
+name: "Bug Fix"
+version: 1
+description: "Report a bug. Get back a verified fix with tests."
+
+polling:
+  model: haiku
+  timeout_seconds: 120
+
+bees:
+  - id: scout
+    name: "Scout Bee"
+    description: "Investigates bugs -- traces from symptom to root cause"
+    role: analysis
+    model: sonnet
+    polling_model: haiku
+    timeout_seconds: 900
+    chamber:
+      base_dir: scout
+      files:
+        "IDENTITY.md": "bees/scout/IDENTITY.md"
+        "NATURE.md": "bees/scout/NATURE.md"
+
+  - id: worker
+    name: "Worker Bee"
+    description: "Implements bug fixes for each identified issue"
+    role: coding
+    model: sonnet
+    polling_model: haiku
+    timeout_seconds: 1800
+    chamber:
+      base_dir: worker
+      files:
+        "IDENTITY.md": "bees/worker/IDENTITY.md"
+        "NATURE.md": "bees/worker/NATURE.md"
+
+  - id: inspector
+    name: "Inspector Bee"
+    description: "Verifies bug fixes are correct and complete"
+    role: verification
+    model: sonnet
+    polling_model: haiku
+    timeout_seconds: 1200
+    chamber:
+      base_dir: inspector
+      files:
+        "IDENTITY.md": "bees/inspector/IDENTITY.md"
+        "NATURE.md": "bees/inspector/NATURE.md"
+
+flights:
+  - id: investigate
+    bee: scout
+    input: |
+      Bug report: {{task}}
+
+      Investigate this bug:
+      1. Reproduce the issue by tracing the relevant code paths
+      2. Identify the root cause with specific file and line references
+      3. Assess the impact and scope of the bug
+      4. Decompose the fix into ordered implementation cells
+
+      Output the root cause analysis and fix cells as CELLS_JSON.
+    expects: "ROOT_CAUSE: description of the bug's cause | AFFECTED_FILES: comma-separated file paths | CELLS_JSON: array of fix cells with id, title, description, acceptance_criteria"
+    max_retries: 2
+
+  - id: fix
+    bee: worker
+    type: loop
+    loop:
+      over: cells
+      verify_each: true
+      verify_flight: review
+      completion: all_done
+    input: |
+      Fix cell: {{current_cell}}
+
+      Root cause: {{root_cause}}
+      Affected files: {{affected_files}}
+      Context from previous fixes: {{completed_cells}}
+      {{#inspect_feedback}}Inspector feedback from previous attempt: {{inspect_feedback}}{{/inspect_feedback}}
+
+      Implement this fix cell. Ensure:
+      - The fix addresses the root cause, not just the symptom
+      - Existing tests still pass
+      - No regressions are introduced
+    expects: "STATUS: done | FILES_CHANGED: list of modified files"
+    max_retries: 3
+
+  - id: review
+    bee: inspector
+    input: |
+      Verify the bug fix for: {{verify_cell_title}}
+
+      Cell description: {{verify_cell_description}}
+      Worker output: {{verify_cell_output}}
+      Acceptance criteria: {{verify_cell_criteria}}
+      Root cause: {{root_cause}}
+
+      Verify that:
+      1. The fix correctly addresses the root cause
+      2. All acceptance criteria are met
+      3. No regressions were introduced
+      4. Edge cases are handled
+    expects: "STATUS: pass/retry | FEEDBACK: verification details"
+    max_retries: 2
+
+  - id: validate
+    bee: inspector
+    input: |
+      Run final validation on the complete bug fix.
+
+      Bug report: {{task}}
+      Root cause: {{root_cause}}
+      Files changed: {{files_changed}}
+      Fixes applied: {{completed_cells}}
+
+      Validate:
+      1. Run the test suite and confirm all tests pass
+      2. Verify the original bug is fixed
+      3. Check for regressions in related functionality
+      4. Confirm the fix is minimal and focused
+    expects: "STATUS: pass/fail | TEST_RESULTS: summary | VALIDATION: overall assessment"
+    max_retries: 2
+
+  - id: finalize
+    bee: worker
+    input: |
+      Create a pull request for the bug fix.
+
+      Bug report: {{task}}
+      Root cause: {{root_cause}}
+      Fixes applied: {{completed_cells}}
+      Test results: {{test_results}}
+      Validation: {{validation}}
+
+      Create a clear PR that explains the bug, its root cause, and the fix.
+    expects: "PR_URL: the pull request URL"
+
+nectar:
+  project_dir: "."

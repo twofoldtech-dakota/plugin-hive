@@ -1,0 +1,139 @@
+id: feature-dev
+name: "Feature Development"
+version: 1
+description: "Drop in a feature request. Get back a tested PR."
+
+polling:
+  model: haiku
+  timeout_seconds: 120
+
+bees:
+  - id: queen
+    name: "Queen Bee"
+    description: "Decomposes feature requests into ordered implementation cells"
+    role: analysis
+    model: opus
+    polling_model: haiku
+    timeout_seconds: 900
+    chamber:
+      base_dir: queen
+      files:
+        "IDENTITY.md": "bees/queen/IDENTITY.md"
+        "NATURE.md": "bees/queen/NATURE.md"
+
+  - id: worker
+    name: "Worker Bee"
+    description: "Implements code changes for each cell"
+    role: coding
+    model: sonnet
+    polling_model: haiku
+    timeout_seconds: 1800
+    chamber:
+      base_dir: worker
+      files:
+        "IDENTITY.md": "bees/worker/IDENTITY.md"
+        "NATURE.md": "bees/worker/NATURE.md"
+
+  - id: inspector
+    name: "Inspector Bee"
+    description: "Verifies implementation meets acceptance criteria"
+    role: verification
+    model: sonnet
+    polling_model: haiku
+    timeout_seconds: 1200
+    chamber:
+      base_dir: inspector
+      files:
+        "IDENTITY.md": "bees/inspector/IDENTITY.md"
+        "NATURE.md": "bees/inspector/NATURE.md"
+
+  - id: builder
+    name: "Builder Bee"
+    description: "Runs tests and validates build integrity"
+    role: testing
+    model: sonnet
+    polling_model: haiku
+    timeout_seconds: 1200
+    chamber:
+      base_dir: builder
+      files:
+        "IDENTITY.md": "bees/builder/IDENTITY.md"
+        "NATURE.md": "bees/builder/NATURE.md"
+
+flights:
+  - id: decompose
+    bee: queen
+    input: |
+      Feature request: {{task}}
+
+      Analyze the codebase and decompose this feature into ordered implementation cells.
+      Each cell must be atomic, independently implementable, and have clear acceptance criteria.
+      Order cells by dependency -- earlier cells must never depend on later ones.
+
+      Output CELLS_JSON with the structured breakdown.
+    expects: "CELLS_JSON: array of cells with id, title, description, acceptance_criteria"
+    max_retries: 2
+
+  - id: implement
+    bee: worker
+    type: loop
+    loop:
+      over: cells
+      verify_each: true
+      verify_flight: inspect
+      completion: all_done
+    input: |
+      Implement cell: {{current_cell}}
+
+      Context from previous cells: {{completed_cells}}
+      {{#inspect_feedback}}Inspector feedback from previous attempt: {{inspect_feedback}}{{/inspect_feedback}}
+
+      Implement this cell and ensure all acceptance criteria are met.
+      Follow existing code patterns and conventions.
+    expects: "STATUS: done | FILES_CHANGED: list of modified files"
+    max_retries: 3
+
+  - id: inspect
+    bee: inspector
+    input: |
+      Verify the implementation of cell: {{verify_cell_title}}
+
+      Cell description: {{verify_cell_description}}
+      Worker output: {{verify_cell_output}}
+      Acceptance criteria: {{verify_cell_criteria}}
+
+      Review the code changes and verify all acceptance criteria are met.
+      Run relevant tests if applicable.
+    expects: "STATUS: pass/retry | FEEDBACK: detailed review"
+    max_retries: 2
+
+  - id: test
+    bee: builder
+    input: |
+      Run the full test suite and validate build integrity.
+      Changed files across all cells: {{files_changed}}
+
+      Steps:
+      1. Run the build process
+      2. Run all test suites
+      3. Run linting and type checking if configured
+      4. Report any failures or regressions
+
+      Ensure all tests pass and no regressions were introduced.
+    expects: "STATUS: pass/fail | TEST_RESULTS: summary"
+    max_retries: 2
+
+  - id: finalize
+    bee: worker
+    input: |
+      Create a pull request for the completed feature.
+
+      Task: {{task}}
+      Cells completed: {{completed_cells}}
+      Test results: {{test_results}}
+
+      Create a clear, well-documented pull request summarizing all changes.
+    expects: "PR_URL: the pull request URL"
+
+nectar:
+  project_dir: "."

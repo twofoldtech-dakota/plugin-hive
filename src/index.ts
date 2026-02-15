@@ -3,17 +3,44 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { initDb } from "./db.js";
 import * as db from "./db.js";
-import { discoverBundledBlueprints, discoverInstalledBlueprints, loadBlueprint } from "./blueprint/loader.js";
+import { discoverBundledBlueprints, loadBlueprint } from "./blueprint/loader.js";
 import { logger } from "./lib/logger.js";
+
+// ── Module imports ───────────────────────────────────────────────────
+
+import { createSwarmFromBlueprint } from "./swarm/create.js";
+import { getSwarmStatus } from "./swarm/status.js";
+import { stopSwarm } from "./swarm/stop.js";
+import { resumeSwarm } from "./swarm/resume.js";
+import { peekFlight } from "./flight/peek.js";
+import { claimFlight } from "./flight/claim.js";
+import { completeFlight } from "./flight/complete.js";
+import { failFlight } from "./flight/fail.js";
+import { scheduler } from "./pollinator/scheduler.js";
+import { pollinate } from "./pollinator/poll.js";
+import type { BlueprintSpec } from "./types.js";
 
 // ── Initialize ───────────────────────────────────────────────────────
 
 initDb();
 logger.info("Hive MCP server starting");
 
+// Re-register buzzing swarms with the scheduler on startup
+const buzzingSwarms = db.listSwarms({ status: "buzzing" });
+for (const swarm of buzzingSwarms) {
+  const bp = db.getBlueprint(swarm.blueprint_id);
+  if (bp) {
+    const spec: BlueprintSpec = JSON.parse(bp.spec);
+    scheduler.registerSwarm(swarm.id, spec);
+  }
+}
+if (buzzingSwarms.length > 0) {
+  logger.info("Scheduler: re-registered buzzing swarms on startup", { count: buzzingSwarms.length });
+}
+
 const server = new McpServer({
   name: "hive",
-  version: "0.1.0",
+  version: "0.2.0",
 });
 
 // ── Blueprint Tools ──────────────────────────────────────────────────
@@ -89,51 +116,24 @@ server.tool(
     task: z.string().describe("The task description for the swarm"),
   },
   async ({ blueprint_id, task }) => {
-    // Verify blueprint is installed
+    const result = createSwarmFromBlueprint(blueprint_id, task);
+    if (!result.success) {
+      return { content: [{ type: "text", text: result.error }], isError: true };
+    }
+
+    // Register with scheduler
     const bp = db.getBlueprint(blueprint_id);
-    if (!bp) {
-      return { content: [{ type: "text", text: `Blueprint "${blueprint_id}" is not installed. Use hive_blueprint_install first.` }], isError: true };
+    if (bp) {
+      const spec: BlueprintSpec = JSON.parse(bp.spec);
+      scheduler.registerSwarm(result.data.id, spec);
     }
-
-    const spec = JSON.parse(bp.spec);
-    const nectar: Record<string, string> = { task, ...(spec.nectar ?? {}) };
-    const swarm = db.createSwarm(blueprint_id, task, nectar, spec.notifications?.url);
-
-    // Insert flights from blueprint
-    for (let i = 0; i < spec.flights.length; i++) {
-      const flight = spec.flights[i];
-      const beeId = `${blueprint_id}_${flight.bee}`;
-      const status = i === 0 ? "pending" : "waiting";
-      db.insertFlight(
-        swarm.id,
-        flight.id,
-        beeId,
-        i,
-        flight.input,
-        flight.expects,
-        status,
-        flight.max_retries ?? 2,
-        flight.type ?? "single",
-        flight.loop ? JSON.stringify(flight.loop) : undefined,
-      );
-    }
-
-    db.insertEvent("swarm.started", swarm.id, { blueprint_id, task });
-    logger.info("Swarm started", { swarmId: swarm.id, swarmNumber: swarm.swarm_number, blueprint_id });
 
     return {
       content: [{
         type: "text",
         text: JSON.stringify({
-          message: `Swarm #${swarm.swarm_number} started`,
-          swarm: {
-            id: swarm.id,
-            number: swarm.swarm_number,
-            blueprint: blueprint_id,
-            task,
-            status: swarm.status,
-            flights: spec.flights.length,
-          },
+          message: `Swarm #${result.data.number} started`,
+          swarm: result.data,
         }, null, 2),
       }],
     };
@@ -145,39 +145,12 @@ server.tool(
   "Get the status of a swarm by number, ID, or task search",
   { query: z.string().describe("Swarm number, ID prefix, or task substring") },
   async ({ query }) => {
-    const swarm = db.findSwarm(query);
-    if (!swarm) {
-      return { content: [{ type: "text", text: `No swarm found matching "${query}"` }], isError: true };
+    const result = getSwarmStatus(query);
+    if (!result.success) {
+      return { content: [{ type: "text", text: result.error }], isError: true };
     }
-    const flights = db.getFlightsForSwarm(swarm.id);
-    const cells = db.getCellsForSwarm(swarm.id);
-
     return {
-      content: [{
-        type: "text",
-        text: JSON.stringify({
-          swarm: {
-            id: swarm.id,
-            number: swarm.swarm_number,
-            blueprint: swarm.blueprint_id,
-            task: swarm.task,
-            status: swarm.status,
-            created_at: swarm.created_at,
-          },
-          flights: flights.map(f => ({
-            id: f.flight_id,
-            bee: f.bee_id,
-            status: f.status,
-            type: f.type,
-            retries: f.retry_count,
-          })),
-          cells: cells.length > 0 ? cells.map(c => ({
-            id: c.cell_id,
-            title: c.title,
-            status: c.status,
-          })) : undefined,
-        }, null, 2),
-      }],
+      content: [{ type: "text", text: JSON.stringify(result.data, null, 2) }],
     };
   },
 );
@@ -215,18 +188,44 @@ server.tool(
   "Cancel a running swarm",
   { swarm_id: z.string().describe("The swarm ID to cancel") },
   async ({ swarm_id }) => {
+    const result = stopSwarm(swarm_id);
+    if (!result.success) {
+      return { content: [{ type: "text", text: result.error }], isError: true };
+    }
+    scheduler.unregisterSwarm(swarm_id);
+    return { content: [{ type: "text", text: result.message }] };
+  },
+);
+
+server.tool(
+  "hive_swarm_resume",
+  "Resume a failed swarm by resetting failed flights and cells",
+  { swarm_id: z.string().describe("The swarm ID to resume") },
+  async ({ swarm_id }) => {
+    const result = resumeSwarm(swarm_id);
+    if (!result.success) {
+      return { content: [{ type: "text", text: result.error }], isError: true };
+    }
+
+    // Re-register with scheduler on resume
     const swarm = db.getSwarm(swarm_id);
-    if (!swarm) {
-      return { content: [{ type: "text", text: `Swarm "${swarm_id}" not found` }], isError: true };
+    if (swarm && !scheduler.isRegistered(swarm_id)) {
+      const bp = db.getBlueprint(swarm.blueprint_id);
+      if (bp) {
+        const spec: BlueprintSpec = JSON.parse(bp.spec);
+        scheduler.registerSwarm(swarm_id, spec);
+      }
     }
-    if (swarm.status !== "buzzing" && swarm.status !== "paused") {
-      return { content: [{ type: "text", text: `Swarm is already ${swarm.status}` }], isError: true };
-    }
-    db.updateSwarm(swarm_id, { status: "cancelled" });
-    db.insertEvent("swarm.cancelled", swarm_id);
-    logger.info("Swarm cancelled", { swarmId: swarm_id });
+
     return {
-      content: [{ type: "text", text: `Swarm #${swarm.swarm_number} cancelled` }],
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          message: result.message,
+          reset_flights: result.resetFlights,
+          reset_cells: result.resetCells,
+        }, null, 2),
+      }],
     };
   },
 );
@@ -238,14 +237,14 @@ server.tool(
   "Check if a bee has pending work (lightweight check)",
   { bee_id: z.string().describe("The bee ID to check (format: blueprintId_beeId)") },
   async ({ bee_id }) => {
-    const count = db.peekFlightsForBee(bee_id);
+    const result = peekFlight(bee_id);
     return {
       content: [{
         type: "text",
         text: JSON.stringify({
-          bee_id,
-          has_work: count > 0,
-          pending_count: count,
+          bee_id: result.beeId,
+          has_work: result.hasWork,
+          pending_count: result.pendingCount,
         }),
       }],
     };
@@ -257,71 +256,16 @@ server.tool(
   "Claim the next pending flight for a bee",
   { bee_id: z.string().describe("The bee ID claiming work") },
   async ({ bee_id }) => {
-    const flight = db.claimFlightForBee(bee_id);
-    if (!flight) {
+    const result = claimFlight(bee_id);
+    if (!result.claimed) {
       return {
         content: [{ type: "text", text: JSON.stringify({ bee_id, claimed: false, message: "No pending flights" }) }],
       };
     }
-
-    // Resolve nectar template
-    const swarm = db.getSwarm(flight.swarm_id)!;
-    const nectar = JSON.parse(swarm.nectar) as Record<string, string>;
-    nectar.swarm_id = swarm.id;
-
-    // For loop flights, include cell context
-    let cell;
-    if (flight.type === "loop") {
-      const nextCell = db.getNextPendingCell(flight.swarm_id);
-      if (nextCell) {
-        db.updateCell(nextCell.id, { status: "in_progress" });
-        db.updateFlight(flight.id, { current_cell_id: nextCell.id });
-        nectar.current_cell = `${nextCell.title}: ${nextCell.description}`;
-        nectar.acceptance_criteria = nextCell.acceptance_criteria;
-        cell = {
-          id: nextCell.id,
-          cell_id: nextCell.cell_id,
-          title: nextCell.title,
-          description: nextCell.description,
-          acceptance_criteria: JSON.parse(nextCell.acceptance_criteria),
-        };
-
-        // Add completed cells context
-        const allCells = db.getCellsForSwarm(flight.swarm_id);
-        const completed = allCells.filter(c => c.status === "done");
-        const remaining = allCells.filter(c => c.status === "pending" || c.status === "in_progress");
-        nectar.completed_cells = completed.map(c => c.title).join(", ") || "none";
-        nectar.cells_remaining = String(remaining.length);
-      }
-    }
-
-    // Compute progress
-    const flights = db.getFlightsForSwarm(flight.swarm_id);
-    const done = flights.filter(f => f.status === "done").length;
-    nectar.progress = `Flight ${done + 1}/${flights.length}`;
-
-    // Resolve template
-    let resolvedInput = flight.input_template;
-    resolvedInput = resolvedInput.replace(/\{\{(\w+)\}\}/g, (_, key) => nectar[key] ?? `{{${key}}}`);
-    resolvedInput = resolvedInput.replace(
-      /\{\{#(\w+)\}\}([\s\S]*?)\{\{\/\1\}\}/g,
-      (_, key, content) => nectar[key] ? content : "",
-    );
-
-    db.insertEvent("flight.claimed", swarm.id, { flight_id: flight.flight_id, bee_id });
-
     return {
       content: [{
         type: "text",
-        text: JSON.stringify({
-          claimed: true,
-          flight_id: flight.id,
-          swarm_id: flight.swarm_id,
-          resolved_input: resolvedInput,
-          expects: flight.expects,
-          type: flight.type,
-          cell,
-        }, null, 2),
+        text: JSON.stringify({ claimed: true, ...result.data }, null, 2),
       }],
     };
   },
@@ -335,54 +279,11 @@ server.tool(
     output: z.string().describe("The flight output (KEY: value format)"),
   },
   async ({ flight_id, output }) => {
-    const flight = db.getFlight(flight_id);
-    if (!flight) {
-      return { content: [{ type: "text", text: `Flight "${flight_id}" not found` }], isError: true };
+    const result = completeFlight(flight_id, output);
+    if (!result.success) {
+      return { content: [{ type: "text", text: result.error }], isError: true };
     }
-    if (flight.status !== "in_flight") {
-      return { content: [{ type: "text", text: `Flight is not in_flight (current: ${flight.status})` }], isError: true };
-    }
-
-    // Parse KEY: value lines from output into nectar
-    const swarm = db.getSwarm(flight.swarm_id)!;
-    const nectar = JSON.parse(swarm.nectar) as Record<string, string>;
-    const lines = output.split("\n");
-    for (const line of lines) {
-      const match = line.match(/^([A-Z_]+):\s*(.+)$/);
-      if (match) {
-        const key = match[1].toLowerCase();
-        nectar[key] = match[2].trim();
-      }
-    }
-    db.updateSwarm(flight.swarm_id, { nectar: JSON.stringify(nectar) });
-
-    // Handle loop flights with cells
-    if (flight.type === "loop" && flight.current_cell_id) {
-      db.updateCell(flight.current_cell_id, { status: "done", output });
-
-      // Check if more cells remain
-      const nextCell = db.getNextPendingCell(flight.swarm_id);
-      if (nextCell) {
-        // Keep flight as pending for next cell
-        db.updateFlight(flight_id, { status: "pending", output, current_cell_id: null });
-        db.insertEvent("cell.completed", flight.swarm_id, { cell_id: flight.current_cell_id });
-      } else {
-        // All cells done, complete the flight
-        db.updateFlight(flight_id, { status: "done", output, current_cell_id: null });
-        db.insertEvent("flight.completed", flight.swarm_id, { flight_id: flight.flight_id });
-        advancePipeline(flight.swarm_id);
-      }
-    } else {
-      // Single flight — just mark done and advance
-      db.updateFlight(flight_id, { status: "done", output });
-      db.insertEvent("flight.completed", flight.swarm_id, { flight_id: flight.flight_id });
-      advancePipeline(flight.swarm_id);
-    }
-
-    logger.info("Flight completed", { flightId: flight_id, flightName: flight.flight_id });
-    return {
-      content: [{ type: "text", text: `Flight "${flight.flight_id}" completed` }],
-    };
+    return { content: [{ type: "text", text: result.message }] };
   },
 );
 
@@ -394,46 +295,29 @@ server.tool(
     error: z.string().describe("Error message describing the failure"),
   },
   async ({ flight_id, error }) => {
-    const flight = db.getFlight(flight_id);
-    if (!flight) {
-      return { content: [{ type: "text", text: `Flight "${flight_id}" not found` }], isError: true };
+    const result = failFlight(flight_id, error);
+    if (!result.success) {
+      return { content: [{ type: "text", text: result.error }], isError: true };
     }
+    return { content: [{ type: "text", text: result.message }] };
+  },
+);
 
-    // Handle cell failure for loop flights
-    if (flight.type === "loop" && flight.current_cell_id) {
-      const cell = db.getCell(flight.current_cell_id);
-      if (cell && cell.retry_count < cell.max_retries) {
-        db.updateCell(cell.id, { status: "pending", retry_count: cell.retry_count + 1 });
-        db.updateFlight(flight_id, { status: "pending", current_cell_id: null });
-        db.insertEvent("cell.failed", flight.swarm_id, { cell_id: cell.id, error, retrying: true });
-        return {
-          content: [{ type: "text", text: `Cell "${cell.cell_id}" failed, retrying (attempt ${cell.retry_count + 1}/${cell.max_retries})` }],
-        };
-      }
-    }
+// ── Pollinator Tools ────────────────────────────────────────────────
 
-    // Check retries for the flight itself
-    if (flight.retry_count < flight.max_retries) {
-      db.updateFlight(flight_id, {
-        status: "pending",
-        retry_count: flight.retry_count + 1,
-        current_cell_id: null,
-      });
-      db.insertEvent("flight.failed", flight.swarm_id, { flight_id: flight.flight_id, error, retrying: true });
-      return {
-        content: [{ type: "text", text: `Flight "${flight.flight_id}" failed, retrying (attempt ${flight.retry_count + 1}/${flight.max_retries})` }],
-      };
-    }
-
-    // No retries left — fail the flight and the swarm
-    db.updateFlight(flight_id, { status: "failed", output: error, current_cell_id: null });
-    db.updateSwarm(flight.swarm_id, { status: "failed" });
-    db.insertEvent("flight.failed", flight.swarm_id, { flight_id: flight.flight_id, error, retrying: false });
-    db.insertEvent("swarm.failed", flight.swarm_id, { reason: `Flight "${flight.flight_id}" exhausted retries` });
-
-    logger.error("Flight failed permanently", { flightId: flight_id, error });
+server.tool(
+  "hive_pollinate",
+  "Poll for ready work across all registered swarms and return spawn requests for the coordinator",
+  {
+    swarm_id: z.string().optional().describe("Optional: filter to a specific swarm ID"),
+  },
+  async ({ swarm_id }) => {
+    const result = pollinate(swarm_id);
     return {
-      content: [{ type: "text", text: `Flight "${flight.flight_id}" failed permanently. Swarm marked as failed.` }],
+      content: [{
+        type: "text",
+        text: JSON.stringify(result, null, 2),
+      }],
     };
   },
 );
@@ -472,7 +356,6 @@ server.tool(
     let actionsTaken = 0;
     const findings: string[] = [];
 
-    // Check for stuck flights
     const stuck = db.getStuckFlights(35);
     for (const flight of stuck) {
       issuesFound++;
@@ -489,7 +372,6 @@ server.tool(
       }
     }
 
-    // Check for stalled swarms
     const stalled = db.getStalledSwarms(30);
     for (const swarm of stalled) {
       issuesFound++;
@@ -519,10 +401,7 @@ server.tool(
   async () => {
     const checks = db.getRecentBeekeeperChecks(10);
     return {
-      content: [{
-        type: "text",
-        text: JSON.stringify(checks, null, 2),
-      }],
+      content: [{ type: "text", text: JSON.stringify(checks, null, 2) }],
     };
   },
 );
@@ -565,46 +444,6 @@ server.resource(
     };
   },
 );
-
-// ── Pipeline Helper ──────────────────────────────────────────────────
-
-function advancePipeline(swarmId: string): void {
-  const flights = db.getFlightsForSwarm(swarmId);
-
-  // Check if all flights are done
-  const allDone = flights.every(f => f.status === "done");
-  if (allDone) {
-    db.updateSwarm(swarmId, { status: "completed" });
-    db.insertEvent("swarm.completed", swarmId);
-    logger.info("Swarm completed", { swarmId });
-    return;
-  }
-
-  // Check for failures
-  const anyFailed = flights.some(f => f.status === "failed");
-  if (anyFailed) {
-    return; // Already handled in flight_fail
-  }
-
-  // Promote next waiting flight to pending
-  for (const flight of flights) {
-    if (flight.status === "waiting") {
-      const prevIndex = flight.flight_index - 1;
-      if (prevIndex < 0) {
-        db.updateFlight(flight.id, { status: "pending" });
-        db.insertEvent("flight.ready", swarmId, { flight_id: flight.flight_id });
-        break;
-      }
-      const prevFlight = flights.find(f => f.flight_index === prevIndex);
-      if (prevFlight && prevFlight.status === "done") {
-        db.updateFlight(flight.id, { status: "pending" });
-        db.insertEvent("flight.ready", swarmId, { flight_id: flight.flight_id });
-        break;
-      }
-      break;
-    }
-  }
-}
 
 // ── Start Server ─────────────────────────────────────────────────────
 

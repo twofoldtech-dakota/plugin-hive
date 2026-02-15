@@ -126,6 +126,12 @@ function migrate(db: DatabaseSync): void {
       created_at TEXT DEFAULT (datetime('now'))
     );
   `);
+
+  // Migration: add verify_meta column to flights (idempotent)
+  const cols = db.prepare("PRAGMA table_info(flights)").all() as Array<{ name: string }>;
+  if (!cols.some(c => c.name === "verify_meta")) {
+    db.exec("ALTER TABLE flights ADD COLUMN verify_meta TEXT");
+  }
 }
 
 // ── Blueprints ───────────────────────────────────────────────────────
@@ -347,7 +353,7 @@ export function updateFlight(
   updates: Partial<
     Pick<
       FlightRecord,
-      "status" | "output" | "retry_count" | "current_cell_id" | "abandoned_count"
+      "status" | "output" | "retry_count" | "current_cell_id" | "abandoned_count" | "verify_meta"
     >
   >,
 ): void {
@@ -375,9 +381,39 @@ export function updateFlight(
     sets.push("abandoned_count = ?");
     params.push(updates.abandoned_count);
   }
+  if (updates.verify_meta !== undefined) {
+    sets.push("verify_meta = ?");
+    params.push(updates.verify_meta);
+  }
 
   params.push(id);
   db.prepare(`UPDATE flights SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+}
+
+export function insertVerificationFlight(
+  swarmId: string,
+  flightId: string,
+  beeId: string,
+  flightIndex: number,
+  inputTemplate: string,
+  expects: string,
+  maxRetries: number,
+  verifyMeta: string,
+): FlightRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    `INSERT INTO flights (id, swarm_id, flight_id, bee_id, flight_index, input_template, expects, status, max_retries, type, verify_meta)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, 'single', ?)`,
+  ).run(id, swarmId, flightId, beeId, flightIndex, inputTemplate, expects, maxRetries, verifyMeta);
+  return getFlight(id)!;
+}
+
+export function getVerificationFlightsForSwarm(swarmId: string): FlightRecord[] {
+  const db = getDb();
+  return rows<FlightRecord>(
+    db.prepare("SELECT * FROM flights WHERE swarm_id = ? AND verify_meta IS NOT NULL ORDER BY flight_index ASC").all(swarmId),
+  );
 }
 
 // ── Cells ────────────────────────────────────────────────────────────
