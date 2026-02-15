@@ -1,0 +1,24 @@
+{
+  "hooks": [
+    {
+      "matcher": "SessionStart",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "node $CLAUDE_PLUGIN_ROOT/hooks/session-start.mjs",
+          "timeout": 5000
+        }
+      ]
+    },
+    {
+      "matcher": "Stop",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "node $CLAUDE_PLUGIN_ROOT/hooks/session-stop.mjs",
+          "timeout": 5000
+        }
+      ]
+    }
+  ]
+}
