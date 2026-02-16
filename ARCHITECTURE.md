@@ -2733,4 +2733,229 @@ Composite 0-100 health score from 8 weighted factors with trend analysis.
 - MCP tools: 109
 - DB tables: 37+
 - Source files: 150+
-- Events: 70+
+
+---
+
+## Phase 19 — Hive Mastery: Governance, Intelligence & Discovery
+
+5 features, 10 new files, 18 MCP tools, 5 new DB tables, 2 new columns, 8 config keys, 15 event types.
+
+### 19.1 Swarm Tagging & Search (`src/swarm/tags.ts`, `src/swarm/search.ts`)
+
+Key-value tagging on swarms with rich multi-filter search using EXISTS subqueries.
+
+**Tagging (`tags.ts`):**
+- `tagSwarm(swarmId, key, value)` — inserts or replaces a tag on a swarm (UNIQUE on swarm_id + key)
+- `untagSwarm(swarmId, key)` — removes a tag by key
+- `getSwarmTags(swarmId)` — returns all tags for a swarm
+- Emits `swarm.tagged` and `swarm.untagged` events
+
+**Search (`search.ts`):**
+- `searchSwarms(filters)` — multi-filter search across swarms
+- Supports tag filters via EXISTS subqueries against `swarm_tags` table
+- Combines with status, blueprint, date range, and text search filters
+- Returns paginated results with tag data included
+
+**Schema:** New `swarm_tags` table (id, swarm_id, key, value, created_at) — UNIQUE(swarm_id, key)
+**Events:** `swarm.tagged`, `swarm.untagged`
+**Tools:** `hive_swarm_tag`, `hive_swarm_untag`, `hive_swarm_tags`, `hive_swarm_search`
+
+### 19.2 Environment Profiles (`src/config/profiles.ts`)
+
+Profile-based configuration overrides with dev/staging/prod presets and profile-aware config resolution.
+
+**Profile Management:**
+- `createProfile(name, description, overrides)` — creates a named profile with JSON config overrides
+- `listProfiles()` — returns all profiles
+- `activateProfile(name)` — sets the active profile; config lookups check profile overrides first
+- `deleteProfile(name)` — removes a profile (deactivates if currently active)
+- Emits `profile.created`, `profile.activated`, `profile.deleted` events
+
+**Profile-Aware Config:**
+- `getConfigValue()` in `src/config/global.ts` checks active profile overrides before falling back to global defaults
+- Override chain: profile override → global config → default value
+
+**Schema:** New `hive_profiles` table (id, name, description, overrides, created_at, updated_at); new `swarms.profile TEXT` column
+**Config:** `profile_enabled` (boolean, default false)
+**Events:** `profile.created`, `profile.activated`, `profile.deleted`
+**Tools:** `hive_profile_create`, `hive_profile_list`, `hive_profile_activate`, `hive_profile_delete`
+
+### 19.3 Bee Memory (`src/memory/store.ts`)
+
+Persistent cross-swarm memory for bees. Bees accumulate knowledge across swarm runs that is automatically injected into future prompts.
+
+**Memory Store (`store.ts`):**
+- `storeMemory(beeId, namespace, key, value, expiresAt?)` — upserts a memory entry (UNIQUE on bee_id + namespace + key)
+- `recallMemory(beeId, namespace?, key?)` — retrieves memory entries with optional namespace/key filters
+- `forgetMemory(beeId, namespace?, key?)` — deletes matching memory entries
+- `getMemoryStats(beeId?)` — returns entry counts and storage size per bee
+
+**Auto-Capture:**
+- `completeFlight()` in `src/flight/complete.ts` scans bee output for `MEMORY:` prefixed keys
+- Automatically stores captured key-value pairs in bee memory
+- Controlled by `bee_memory_auto_capture` config flag
+
+**Prompt Injection:**
+- `buildBeePrompt()` in `src/pollinator/spawn.ts` injects memory context between Expected Output and Progress sections
+- Respects `bee_memory_max_chars` limit for injected context
+
+**Pruning:**
+- `checkExpiredMemories()` in `src/beekeeper/checks.ts` detects expired entries
+- `pruneMemories()` in `src/beekeeper/remediate.ts` removes expired entries
+- Emits `memory.pruned` event
+
+**Schema:** New `bee_memory` table (id, bee_id, namespace, key, value, expires_at, created_at, updated_at) — UNIQUE(bee_id, namespace, key)
+**Config:** `bee_memory_enabled` (boolean, default false), `bee_memory_max_entries` (number), `bee_memory_max_chars` (number), `bee_memory_auto_capture` (boolean, default false), `memory_retention_days` (number)
+**Events:** `memory.stored`, `memory.forgotten`, `memory.pruned`
+**Tools:** `hive_bee_memory_store`, `hive_bee_memory_recall`, `hive_bee_memory_forget`, `hive_memory_stats`
+**Integration:** `src/pollinator/spawn.ts` (prompt injection), `src/flight/complete.ts` (auto-capture), `src/beekeeper/checks.ts` (expiry detection), `src/beekeeper/remediate.ts` (pruning)
+
+### 19.4 Blueprint Dependencies (`src/blueprint/deps.ts`)
+
+Blueprints can declare `requires` dependencies on other blueprints. Validated at install time with cycle detection.
+
+**Dependency Validation (`deps.ts`):**
+- `validateBlueprintDeps(blueprintId, requires)` — checks all required blueprints are installed
+- `detectCycles(blueprintId, requires)` — uses Kahn's algorithm to detect circular dependencies in the dependency graph
+- Returns validation errors for missing dependencies and cycles
+
+**Schema Integration:**
+- `BlueprintSpecSchema` in `src/blueprint/schema.ts` now supports `requires` field (array of blueprint IDs)
+- New `blueprints.requires TEXT` column — JSON array of required blueprint IDs
+- Validated during `installBlueprint()` and `installFromRegistry()`
+
+**Events:** `blueprint.deps_validated`
+**Tool:** `hive_blueprint_deps`
+
+### 19.5 Operational Playbooks (`src/playbook/manager.ts`, `src/playbook/engine.ts`)
+
+Automated incident response playbooks triggered by hive conditions with cooldown-protected execution.
+
+**Playbook Management (`manager.ts`):**
+- `createPlaybook(name, description, triggerCondition, actions, cooldownMinutes)` — creates an automated playbook
+- `listPlaybooks()` — returns all playbooks with execution stats
+- `deletePlaybook(playbookId)` — removes a playbook
+- `togglePlaybook(playbookId)` — enables/disables a playbook
+- `getPlaybookHistory(playbookId)` — returns execution history
+
+**Trigger Conditions:**
+- `health_below(N)` — health score drops below threshold
+- `circuit_open(bee_id)` — circuit breaker opens for a bee
+- `dlq_count_above(N)` — dead letter count exceeds threshold
+- `queue_depth_above(N)` — concurrency queue exceeds threshold
+
+**Playbook Engine (`engine.ts`):**
+- `evaluatePlaybooks()` — checks all enabled playbooks against current hive state
+- Respects `cooldown_minutes` to prevent repeated firing
+- Executes action sequences: reset_circuit, replay_dlq, pause_swarm, notify_channel, run_beekeeper
+- Records execution results in `playbook_executions` table
+- Emits `playbook.triggered`, `playbook.executed`, `playbook.cooldown` events
+
+**Beekeeper Integration:**
+- `runBeekeeperCheck()` in `src/beekeeper/monitor.ts` evaluates playbooks after health score computation
+- `checkPlaybookCooldowns()` in `src/beekeeper/checks.ts` reports playbooks in cooldown
+
+**Schema:** New `hive_playbooks` table (id, name, description, trigger_condition, actions, cooldown_minutes, enabled, last_executed_at, execution_count, created_at, updated_at); new `playbook_executions` table (id, playbook_id, trigger_value, actions_taken, results, success, created_at)
+**Config:** `playbooks_enabled` (boolean, default false), `playbook_history_retention_days` (number)
+**Events:** `playbook.created`, `playbook.deleted`, `playbook.toggled`, `playbook.triggered`, `playbook.executed`, `playbook.cooldown`
+**Tools:** `hive_playbook_create`, `hive_playbook_list`, `hive_playbook_delete`, `hive_playbook_toggle`, `hive_playbook_history`
+**Integration:** `src/beekeeper/monitor.ts` (post-health evaluation), `src/beekeeper/checks.ts` (cooldown checks)
+
+### 19.6 Schema Changes
+
+**New Tables (5):**
+- `swarm_tags` (id, swarm_id, key, value, created_at) — UNIQUE(swarm_id, key)
+- `hive_profiles` (id, name, description, overrides, created_at, updated_at)
+- `bee_memory` (id, bee_id, namespace, key, value, expires_at, created_at, updated_at) — UNIQUE(bee_id, namespace, key)
+- `hive_playbooks` (id, name, description, trigger_condition, actions, cooldown_minutes, enabled, last_executed_at, execution_count, created_at, updated_at)
+- `playbook_executions` (id, playbook_id, trigger_value, actions_taken, results, success, created_at)
+
+**New Columns (2):**
+- `swarms.profile TEXT` — active environment profile for the swarm
+- `blueprints.requires TEXT` — JSON array of required blueprint IDs
+
+**New Config Keys (8):**
+- `profile_enabled` (boolean, default false) — enable environment profiles
+- `bee_memory_enabled` (boolean, default false) — enable bee memory system
+- `bee_memory_max_entries` (number) — max memory entries per bee
+- `bee_memory_max_chars` (number) — max characters injected into bee prompts
+- `bee_memory_auto_capture` (boolean, default false) — auto-capture MEMORY: keys from bee output
+- `playbooks_enabled` (boolean, default false) — enable operational playbooks
+- `memory_retention_days` (number) — retention period for expired memory entries
+- `playbook_history_retention_days` (number) — retention period for playbook execution history
+
+**New Events (15):**
+- `swarm.tagged` — tag added to a swarm
+- `swarm.untagged` — tag removed from a swarm
+- `profile.created` — environment profile created
+- `profile.activated` — environment profile activated
+- `profile.deleted` — environment profile deleted
+- `memory.stored` — bee memory entry stored
+- `memory.forgotten` — bee memory entry deleted
+- `memory.pruned` — expired memory entries cleaned up
+- `playbook.created` — operational playbook created
+- `playbook.deleted` — operational playbook removed
+- `playbook.toggled` — playbook enabled/disabled
+- `playbook.triggered` — playbook trigger condition matched
+- `playbook.executed` — playbook actions executed
+- `playbook.cooldown` — playbook skipped due to cooldown
+- `blueprint.deps_validated` — blueprint dependency validation completed
+
+### 19.7 New MCP Tools
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `hive_swarm_tag` | Add a key-value tag to a swarm | `swarm_id, key, value` |
+| `hive_swarm_untag` | Remove a tag from a swarm | `swarm_id, key` |
+| `hive_swarm_tags` | List all tags for a swarm | `swarm_id` |
+| `hive_swarm_search` | Search swarms with multi-filter criteria | `tags?, status?, blueprint?, text?` |
+| `hive_profile_create` | Create an environment profile | `name, description?, overrides` |
+| `hive_profile_list` | List all environment profiles | — |
+| `hive_profile_activate` | Activate an environment profile | `name` |
+| `hive_profile_delete` | Delete an environment profile | `name` |
+| `hive_bee_memory_store` | Store a bee memory entry | `bee_id, namespace, key, value, expires_at?` |
+| `hive_bee_memory_recall` | Recall bee memory entries | `bee_id, namespace?, key?` |
+| `hive_bee_memory_forget` | Delete bee memory entries | `bee_id, namespace?, key?` |
+| `hive_memory_stats` | Show bee memory statistics | `bee_id?` |
+| `hive_blueprint_deps` | Validate blueprint dependencies | `blueprint_id` |
+| `hive_playbook_create` | Create an operational playbook | `name, description?, trigger_condition, actions, cooldown_minutes?` |
+| `hive_playbook_list` | List all operational playbooks | — |
+| `hive_playbook_delete` | Delete an operational playbook | `playbook_id` |
+| `hive_playbook_toggle` | Enable or disable a playbook | `playbook_id` |
+| `hive_playbook_history` | View playbook execution history | `playbook_id, limit?` |
+
+**Total MCP Tools:** 127 (109 from Phase 18 + 18 new)
+
+### 19.8 New Files
+
+| File | Purpose |
+|------|---------|
+| `src/swarm/tags.ts` | Swarm tagging operations |
+| `src/swarm/search.ts` | Multi-filter swarm search engine |
+| `src/config/profiles.ts` | Environment profile management |
+| `src/memory/store.ts` | Persistent bee memory store |
+| `src/blueprint/deps.ts` | Blueprint dependency validation with cycle detection |
+| `src/playbook/manager.ts` | Playbook CRUD operations |
+| `src/playbook/engine.ts` | Playbook evaluation and execution engine |
+| `src/swarm/tags.test.ts` | Tests for swarm tagging |
+| `src/memory/store.test.ts` | Tests for bee memory store |
+| `src/playbook/engine.test.ts` | Tests for playbook engine |
+
+### Modified Files
+
+| File | Changes |
+|------|---------|
+| `src/config/global.ts` | Profile-aware override chain in `getConfigValue()` |
+| `src/pollinator/spawn.ts` | Bee memory injection into `buildBeePrompt()` |
+| `src/flight/complete.ts` | Auto-capture `MEMORY:` keys from bee output |
+| `src/blueprint/schema.ts` | `requires` field on `BlueprintSpecSchema` |
+| `src/beekeeper/monitor.ts` | Playbook evaluation after health score computation |
+| `src/beekeeper/checks.ts` | `checkExpiredMemories()`, `checkPlaybookCooldowns()` |
+| `src/beekeeper/remediate.ts` | `pruneMemories()` remediation handler |
+| `src/observatory/api.ts` | 7 new API endpoints for tags, profiles, memory, deps, and playbooks |
+
+### Cumulative Totals
+
+- MCP tools: 127
+- DB tables: 42+
+- Source files: 160+

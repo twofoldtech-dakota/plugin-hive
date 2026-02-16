@@ -15,6 +15,7 @@ import { checkBudget } from "../budget/budget.js";
 import { checkFlightAnomaly } from "../anomaly/detector.js";
 import { handleSubSwarmCompletion } from "./sub-swarm.js";
 import { recordCircuitSuccess } from "../resilience/circuit-breaker.js";
+import { autoCaptureMemories } from "../memory/store.js";
 import type { LoopConfig, BlueprintSpec, FlightRecord } from "../types.js";
 
 export type CompleteFlightResult =
@@ -97,6 +98,9 @@ export function completeFlight(flightId: string, output: string): CompleteFlight
 
   // Anomaly detection: check duration and tokens against baselines
   checkFlightAnomaly(flight, swarm.blueprint_id, durationSec, tokens);
+
+  // Auto-capture MEMORY: keys from output (Phase 19)
+  autoCaptureMemories(flight.bee_id, output, swarm.blueprint_id);
 
   // Check if parent swarm should be notified of sub-swarm completion
   if (swarm.parent_flight_id) {

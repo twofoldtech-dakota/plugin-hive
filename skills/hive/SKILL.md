@@ -113,6 +113,21 @@ Parse the first word of `$ARGUMENTS` as the sub-command. If no arguments are giv
 | `test delete <test_id>` | Delete a test case (see **test delete**) |
 | `health` | Show hive health score (see **health**) |
 | `health history` | Show health score history (see **health history**) |
+| `tag <N> <key>=<value>` | Tag a swarm with key=value metadata. Call `hive_swarm_tag` with the resolved swarm ID, key, and value |
+| `untag <N> <key>` | Remove a tag from a swarm. Call `hive_swarm_untag` with the resolved swarm ID and key |
+| `search <query> [--tag=X] [--from=date] [--to=date]` | Search swarms with rich filters. Call `hive_swarm_search` with parsed filters |
+| `profile create <name>` | Create a config profile. Call `hive_profile_create` with the name |
+| `profile list` | List profiles. Call `hive_profile_list` |
+| `profile activate <name>` | Activate a profile. Call `hive_profile_activate` with the name |
+| `profile delete <name>` | Delete a profile. Call `hive_profile_delete` with the name |
+| `memory <bee_id>` | View bee memories. Call `hive_bee_memory_recall` with the bee_id |
+| `memory clear <bee_id>` | Clear bee memories. Call `hive_bee_memory_forget` with the bee_id |
+| `deps [blueprint_id]` | Show blueprint dependencies. Call `hive_blueprint_deps` |
+| `playbook create <name>` | Create an operational playbook (interactive). Call `hive_playbook_create` |
+| `playbook list` | List playbooks. Call `hive_playbook_list` |
+| `playbook delete <id>` | Delete a playbook. Call `hive_playbook_delete` with the id |
+| `playbook toggle <id>` | Enable/disable a playbook. Call `hive_playbook_toggle` with the id |
+| `playbook history [id]` | View playbook execution history. Call `hive_playbook_history` |
 
 ---
 
@@ -948,6 +963,130 @@ Show health score history.
 1. Parse optional `--limit=N` (default 20).
 2. Call `mcp__hive__hive_health_history` with limit.
 3. Format as a table: `composite_score | trend | computed_at`.
+
+### tag
+
+Tag a swarm with key=value metadata.
+
+1. The first argument is the swarm number or ID.
+2. **Number resolution:** If the argument is a short number, call `mcp__hive__hive_swarm_status` with it first to resolve the full swarm ID.
+3. The second argument is in `key=value` format. Split on the first `=` to extract the key and value.
+4. Call `mcp__hive__hive_swarm_tag` with the resolved swarm ID, key, and value.
+
+### untag
+
+Remove a tag from a swarm.
+
+1. The first argument is the swarm number or ID.
+2. **Number resolution:** If the argument is a short number, call `mcp__hive__hive_swarm_status` with it first to resolve the full swarm ID.
+3. The second argument is the tag key to remove.
+4. Call `mcp__hive__hive_swarm_untag` with the resolved swarm ID and key.
+
+### search
+
+Search swarms with rich filters.
+
+1. The first argument is the search query string.
+2. Parse optional flags: `--tag=key:value` (filter by tag), `--from=ISO8601` (created after), `--to=ISO8601` (created before), `--status=X`, `--blueprint=X`.
+3. For `--tag=key:value`, split on the first `:` to extract tag_key and tag_value.
+4. Call `mcp__hive__hive_swarm_search` with query and any parsed filters (tag_key, tag_value, from, to, status, blueprint_id).
+
+### profile create
+
+Create a configuration profile.
+
+1. The argument is the profile name.
+2. Prompt the user for configuration key-value pairs to include, or accept them as additional `key=value` arguments.
+3. Call `mcp__hive__hive_profile_create` with the name and config entries.
+
+### profile list
+
+List all configuration profiles.
+
+1. Call `mcp__hive__hive_profile_list`.
+2. Format as a table: `name | active | keys | created_at`.
+
+### profile activate
+
+Activate a configuration profile.
+
+1. The argument is the profile name.
+2. Call `mcp__hive__hive_profile_activate` with the name.
+3. Confirm activation and list the config keys that were applied.
+
+### profile delete
+
+Delete a configuration profile.
+
+1. The argument is the profile name.
+2. Call `mcp__hive__hive_profile_delete` with the name.
+3. Confirm deletion.
+
+### memory
+
+View bee memories.
+
+1. The argument is the bee ID (e.g. `feature-dev_worker`). If the argument is a swarm number, resolve it first via `mcp__hive__hive_swarm_status` to identify the swarm, then ask which bee to query.
+2. Call `mcp__hive__hive_bee_memory_recall` with the bee_id.
+3. Format memories showing: key, value, and timestamp.
+
+### memory clear
+
+Clear all memories for a bee.
+
+1. The argument is the bee ID. If the argument is a swarm number, resolve it first via `mcp__hive__hive_swarm_status` to identify the swarm, then ask which bee to clear.
+2. Call `mcp__hive__hive_bee_memory_forget` with the bee_id.
+3. Confirm how many memories were cleared.
+
+### deps
+
+Show blueprint dependency graph.
+
+1. If a blueprint_id is given, call `mcp__hive__hive_blueprint_deps` with blueprint_id.
+2. If no argument, call `mcp__hive__hive_blueprint_deps` with no params to show dependencies for all installed blueprints.
+3. Format as a dependency tree showing: blueprint, required blueprints, shared bees, and nectar contracts.
+
+### playbook create
+
+Create an operational playbook (interactive).
+
+1. The argument is the playbook name.
+2. Prompt the user for the trigger type (e.g. `swarm.failed`, `flight.failed`, `health.degraded`, `anomaly.critical`).
+3. Prompt for the threshold or condition (e.g. failure count, health score threshold).
+4. Prompt for the actions to take (e.g. `notify`, `restart`, `escalate`, `cancel`), accepting multiple actions as a list.
+5. Call `mcp__hive__hive_playbook_create` with name, trigger, threshold, and actions.
+6. Confirm creation and show the playbook summary.
+
+### playbook list
+
+List operational playbooks.
+
+1. Call `mcp__hive__hive_playbook_list`.
+2. Format as a table: `id | name | trigger | enabled | last_run | run_count`.
+
+### playbook delete
+
+Delete an operational playbook.
+
+1. The argument is the playbook ID.
+2. Call `mcp__hive__hive_playbook_delete` with the id.
+3. Confirm deletion.
+
+### playbook toggle
+
+Enable or disable an operational playbook.
+
+1. The argument is the playbook ID.
+2. Call `mcp__hive__hive_playbook_toggle` with the id.
+3. Report the updated enabled state.
+
+### playbook history
+
+View playbook execution history.
+
+1. If a playbook ID is given, call `mcp__hive__hive_playbook_history` with id.
+2. If no argument, call `mcp__hive__hive_playbook_history` with no params to show all playbook history.
+3. Format as a table: `id | playbook_name | trigger_event | actions_taken | result | executed_at`.
 
 ---
 

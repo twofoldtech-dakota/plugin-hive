@@ -49,6 +49,9 @@ import { refreshAllBaselines } from "../anomaly/baselines.js";
 import { handleSubSwarmFailure } from "../flight/sub-swarm.js";
 import { computeHealthScore } from "../observatory/health.js";
 import { getConfigBoolean as getConfigBooleanHealth } from "../config/global.js";
+import { evaluatePlaybooks } from "../playbook/engine.js";
+import { checkExpiredMemories, checkPlaybookCooldowns } from "./checks.js";
+import { pruneMemories as pruneMemoriesRemediation } from "./remediate.js";
 import type { CheckResult, BeekeeperReport, BlueprintSpec } from "../types.js";
 
 function promoteScheduledSwarm(swarmId: string): { success: boolean } {
@@ -85,6 +88,7 @@ const remediationMap: Record<string, (entityId: string) => { success: boolean }>
   cleanExpiredCache,
   timeoutSubSwarm,
   evaluateSchedules,
+  pruneMemories: pruneMemoriesRemediation,
 };
 
 /**
@@ -113,6 +117,8 @@ export function runBeekeeperCheck(): BeekeeperReport {
     ...checkDueSchedules(),
     ...checkOpenCircuits(),
     ...checkDeadLetters(),
+    ...checkExpiredMemories(),
+    ...checkPlaybookCooldowns(),
   ];
 
   // Periodic baseline refresh for anomaly detection
@@ -156,6 +162,9 @@ export function runBeekeeperCheck(): BeekeeperReport {
   if (getConfigBooleanHealth("health_snapshot_enabled", true)) {
     try { computeHealthScore(); } catch { /* health scoring is best-effort */ }
   }
+
+  // Evaluate operational playbooks (Phase 19)
+  try { evaluatePlaybooks(); } catch { /* playbook evaluation is best-effort */ }
 
   logger.info("Beekeeper check completed", { issuesFound: allResults.length, actionsTaken });
 

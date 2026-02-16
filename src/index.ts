@@ -77,7 +77,13 @@ import { listDeadLettersQuery, replayDeadLetter, purgeDeadLetters } from "./resi
 import { addTestCase, listTestCasesQuery, deleteTestCaseById } from "./blueprint/testing/manager.js";
 import { runBlueprintTest, runBlueprintTestSuite } from "./blueprint/testing/runner.js";
 import { computeHealthScore, getHealthHistoryQuery } from "./observatory/health.js";
-import type { BlueprintSpec, GatePolicy, HiveEventType, NotificationChannelType, InboundWebhookPermission, CircuitState } from "./types.js";
+import { tagSwarm, untagSwarm, getSwarmTags as getSwarmTagsFn } from "./swarm/tags.js";
+import { searchSwarms as searchSwarmsFn } from "./swarm/search.js";
+import { createProfile, listProfiles as listProfilesFn, activateProfile, deactivateProfile, deleteProfile } from "./config/profiles.js";
+import { storeMemory, recallMemory, forgetMemory, getMemoryStats } from "./memory/store.js";
+import { computeDependencyGraph } from "./blueprint/deps.js";
+import { createPlaybook, listPlaybooks as listPlaybooksFn, deletePlaybook as deletePlaybookFn, togglePlaybook, getPlaybookHistory } from "./playbook/manager.js";
+import type { BlueprintSpec, GatePolicy, HiveEventType, NotificationChannelType, InboundWebhookPermission, CircuitState, PlaybookTriggerType, PlaybookActionType, PlaybookAction } from "./types.js";
 
 // ── Initialize ───────────────────────────────────────────────────────
 
@@ -1971,6 +1977,257 @@ server.tool(
   { limit: z.number().optional().describe("Max snapshots to return (default 20)") },
   errorBoundary(async ({ limit }) => {
     const result = getHealthHistoryQuery(limit);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  }),
+);
+
+// ── Phase 19: Tag Tools ──────────────────────────────────────────────
+
+server.tool(
+  "hive_swarm_tag",
+  "Add or update a tag on a swarm",
+  {
+    swarm_id: z.string().describe("Swarm ID or number"),
+    key: z.string().describe("Tag key"),
+    value: z.string().describe("Tag value"),
+  },
+  errorBoundary(async ({ swarm_id, key, value }) => {
+    const swarm = db.findSwarm(swarm_id);
+    if (!swarm) return { content: [{ type: "text" as const, text: `Swarm "${swarm_id}" not found` }], isError: true };
+    const result = tagSwarm(swarm.id, key, value);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }], isError: !result.success };
+  }),
+);
+
+server.tool(
+  "hive_swarm_untag",
+  "Remove a tag from a swarm",
+  {
+    swarm_id: z.string().describe("Swarm ID or number"),
+    key: z.string().describe("Tag key to remove"),
+  },
+  errorBoundary(async ({ swarm_id, key }) => {
+    const swarm = db.findSwarm(swarm_id);
+    if (!swarm) return { content: [{ type: "text" as const, text: `Swarm "${swarm_id}" not found` }], isError: true };
+    const result = untagSwarm(swarm.id, key);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }], isError: !result.success };
+  }),
+);
+
+server.tool(
+  "hive_swarm_tags",
+  "List tags for a swarm",
+  { swarm_id: z.string().describe("Swarm ID or number") },
+  errorBoundary(async ({ swarm_id }) => {
+    const swarm = db.findSwarm(swarm_id);
+    if (!swarm) return { content: [{ type: "text" as const, text: `Swarm "${swarm_id}" not found` }], isError: true };
+    const result = getSwarmTagsFn(swarm.id);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }], isError: !result.success };
+  }),
+);
+
+server.tool(
+  "hive_swarm_search",
+  "Rich multi-filter swarm search with tag support",
+  {
+    query: z.string().optional().describe("Text search in task or ID"),
+    status: z.enum(["buzzing", "paused", "blocked", "completed", "failed", "cancelled", "scheduled", "queued"]).optional().describe("Filter by status"),
+    blueprint_id: z.string().optional().describe("Filter by blueprint"),
+    tags: z.record(z.string(), z.string()).optional().describe("Tag key-value filters"),
+    from: z.string().optional().describe("From date (ISO)"),
+    to: z.string().optional().describe("To date (ISO)"),
+    limit: z.number().optional().describe("Max results (default 50)"),
+    offset: z.number().optional().describe("Offset for pagination"),
+  },
+  errorBoundary(async (args) => {
+    const result = searchSwarmsFn(args);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  }),
+);
+
+// ── Phase 19: Profile Tools ─────────────────────────────────────────
+
+server.tool(
+  "hive_profile_create",
+  "Create a configuration profile with override values",
+  {
+    name: z.string().describe("Profile name"),
+    description: z.string().optional().describe("Profile description"),
+    overrides: z.record(z.string(), z.string()).optional().describe("Config key-value overrides"),
+  },
+  errorBoundary(async ({ name, description, overrides }) => {
+    const result = createProfile(name, description, overrides);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }], isError: !result.success };
+  }),
+);
+
+server.tool(
+  "hive_profile_list",
+  "List all configuration profiles",
+  {},
+  errorBoundary(async () => {
+    const profiles = listProfilesFn();
+    const activeConfig = db.getHiveConfig("active_profile");
+    return { content: [{ type: "text" as const, text: JSON.stringify({ profiles, active: activeConfig?.value ?? null }, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_profile_activate",
+  "Activate or deactivate a configuration profile",
+  {
+    name: z.string().describe("Profile name to activate (empty string to deactivate)"),
+  },
+  errorBoundary(async ({ name }) => {
+    const result = name ? activateProfile(name) : deactivateProfile();
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }], isError: !result.success };
+  }),
+);
+
+server.tool(
+  "hive_profile_delete",
+  "Delete a configuration profile",
+  { name: z.string().describe("Profile name to delete") },
+  errorBoundary(async ({ name }) => {
+    const result = deleteProfile(name);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }], isError: !result.success };
+  }),
+);
+
+// ── Phase 19: Bee Memory Tools ──────────────────────────────────────
+
+server.tool(
+  "hive_bee_memory_store",
+  "Store a memory entry for a bee",
+  {
+    bee_id: z.string().describe("Bee identifier"),
+    key: z.string().describe("Memory key"),
+    value: z.string().describe("Memory value"),
+    namespace: z.string().optional().describe("Namespace (default: 'default')"),
+    ttl_minutes: z.number().optional().describe("Time-to-live in minutes"),
+  },
+  errorBoundary(async ({ bee_id, key, value, namespace, ttl_minutes }) => {
+    const result = storeMemory(bee_id, key, value, namespace, ttl_minutes);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }], isError: !result.success };
+  }),
+);
+
+server.tool(
+  "hive_bee_memory_recall",
+  "Recall memories for a bee",
+  {
+    bee_id: z.string().describe("Bee identifier"),
+    namespace: z.string().optional().describe("Namespace filter"),
+  },
+  errorBoundary(async ({ bee_id, namespace }) => {
+    const result = recallMemory(bee_id, namespace);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_bee_memory_forget",
+  "Delete memories for a bee",
+  {
+    bee_id: z.string().describe("Bee identifier"),
+    namespace: z.string().optional().describe("Namespace filter"),
+    key: z.string().optional().describe("Specific key to delete"),
+  },
+  errorBoundary(async ({ bee_id, namespace, key }) => {
+    const result = forgetMemory(bee_id, namespace, key);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_memory_stats",
+  "View bee memory statistics",
+  {},
+  errorBoundary(async () => {
+    const result = getMemoryStats();
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  }),
+);
+
+// ── Phase 19: Blueprint Dependency Tools ─────────────────────────────
+
+server.tool(
+  "hive_blueprint_deps",
+  "Show blueprint dependency graph",
+  { blueprint_id: z.string().optional().describe("Blueprint ID (omit for all)") },
+  errorBoundary(async ({ blueprint_id }) => {
+    const result = computeDependencyGraph(blueprint_id);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  }),
+);
+
+// ── Phase 19: Playbook Tools ────────────────────────────────────────
+
+server.tool(
+  "hive_playbook_create",
+  "Create an operational playbook for automated incident response",
+  {
+    name: z.string().describe("Playbook name"),
+    trigger_type: z.enum(["health_below", "swarm_failure_rate", "circuit_open_count", "dead_letter_count", "queue_depth"]).describe("Trigger condition type"),
+    threshold: z.number().describe("Trigger threshold value"),
+    actions: z.array(z.object({
+      type: z.enum(["pause_swarms", "cancel_swarms", "reset_circuits", "purge_dlq", "notify", "run_maintenance"]).describe("Action type"),
+      params: z.record(z.string(), z.string()).optional().describe("Action parameters"),
+    })).describe("Actions to execute when triggered"),
+    description: z.string().optional().describe("Playbook description"),
+    cooldown_minutes: z.number().optional().describe("Cooldown period in minutes (default 30)"),
+  },
+  errorBoundary(async ({ name, trigger_type, threshold, actions, description, cooldown_minutes }) => {
+    const result = createPlaybook(
+      name,
+      trigger_type as PlaybookTriggerType,
+      threshold,
+      actions as PlaybookAction[],
+      { description, cooldown_minutes },
+    );
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }], isError: !result.success };
+  }),
+);
+
+server.tool(
+  "hive_playbook_list",
+  "List operational playbooks",
+  { enabled_only: z.boolean().optional().describe("Only show enabled playbooks") },
+  errorBoundary(async ({ enabled_only }) => {
+    const result = listPlaybooksFn(enabled_only ? true : undefined);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_playbook_delete",
+  "Delete an operational playbook",
+  { id: z.string().describe("Playbook ID") },
+  errorBoundary(async ({ id }) => {
+    const result = deletePlaybookFn(id);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }], isError: !result.success };
+  }),
+);
+
+server.tool(
+  "hive_playbook_toggle",
+  "Enable or disable a playbook",
+  { id: z.string().describe("Playbook ID") },
+  errorBoundary(async ({ id }) => {
+    const result = togglePlaybook(id);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }], isError: !result.success };
+  }),
+);
+
+server.tool(
+  "hive_playbook_history",
+  "View playbook execution history",
+  {
+    playbook_id: z.string().optional().describe("Playbook ID (omit for all)"),
+    limit: z.number().optional().describe("Max entries (default 20)"),
+  },
+  errorBoundary(async ({ playbook_id, limit }) => {
+    const result = getPlaybookHistory(playbook_id, limit);
     return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
   }),
 );

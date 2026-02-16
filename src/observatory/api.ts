@@ -419,6 +419,63 @@ export function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       return;
     }
 
+    // GET /api/tags/:swarm_id
+    const tagsMatch = path.match(/^\/api\/tags\/([^/]+)$/);
+    if (tagsMatch && req.method === "GET") {
+      const swarm = db.findSwarm(tagsMatch[1]);
+      if (!swarm) { notFound(res, "Swarm not found"); return; }
+      json(res, db.getSwarmTags(swarm.id));
+      return;
+    }
+
+    // GET /api/search
+    if (path === "/api/search" && req.method === "GET") {
+      const query = url.searchParams.get("query") ?? undefined;
+      const status = url.searchParams.get("status") as import("../types.js").SwarmStatus | undefined;
+      const blueprintId = url.searchParams.get("blueprint_id") ?? undefined;
+      const from = url.searchParams.get("from") ?? undefined;
+      const to = url.searchParams.get("to") ?? undefined;
+      const limitParam = url.searchParams.get("limit");
+      const limit = limitParam ? parseInt(limitParam, 10) : 50;
+      json(res, db.searchSwarms({ query, status, blueprint_id: blueprintId, from, to, limit }));
+      return;
+    }
+
+    // GET /api/profiles
+    if (path === "/api/profiles" && req.method === "GET") {
+      json(res, db.listProfiles());
+      return;
+    }
+
+    // GET /api/memory/:bee_id
+    const memoryMatch = path.match(/^\/api\/memory\/([^/]+)$/);
+    if (memoryMatch && req.method === "GET") {
+      const namespace = url.searchParams.get("namespace") ?? undefined;
+      json(res, db.getBeeMemories(memoryMatch[1], namespace));
+      return;
+    }
+
+    // GET /api/memory/stats
+    if (path === "/api/memory/stats" && req.method === "GET") {
+      json(res, db.getBeeMemoryStats());
+      return;
+    }
+
+    // GET /api/playbooks
+    if (path === "/api/playbooks" && req.method === "GET") {
+      json(res, db.listPlaybooks());
+      return;
+    }
+
+    // GET /api/playbook-history
+    if (path === "/api/playbook-history" && req.method === "GET") {
+      const playbookId = url.searchParams.get("playbook_id") ?? undefined;
+      const limitParam = url.searchParams.get("limit");
+      const limit = limitParam ? parseInt(limitParam, 10) : 20;
+      json(res, db.getPlaybookExecutions(playbookId, limit));
+      return;
+    }
+
     // GET /api/health
     if (path === "/api/health" && req.method === "GET") {
       json(res, computeHealthScore());

@@ -495,3 +495,45 @@ export function checkDeadLetters(): CheckResult[] {
     // Advisory only — dead letters require manual replay/purge
   }];
 }
+
+/**
+ * Check for expired bee memories (Phase 19).
+ */
+export function checkExpiredMemories(): CheckResult[] {
+  const stats = db.getBeeMemoryStats();
+  if (stats.expired === 0) return [];
+
+  return [{
+    issue: `${stats.expired} expired bee memory entries pending cleanup`,
+    severity: "warning" as const,
+    entity_type: "flight" as const,
+    entity_id: "bee_memory",
+    remediation: "pruneMemories",
+  }];
+}
+
+/**
+ * Check for playbooks in cooldown (Phase 19 — advisory).
+ */
+export function checkPlaybookCooldowns(): CheckResult[] {
+  const playbooks = db.listPlaybooks(true);
+  const results: CheckResult[] = [];
+
+  for (const pb of playbooks) {
+    if (pb.last_executed_at) {
+      const lastExec = new Date(pb.last_executed_at.replace(" ", "T") + "Z").getTime();
+      const cooldownMs = pb.cooldown_minutes * 60_000;
+      if (Date.now() - lastExec < cooldownMs) {
+        results.push({
+          issue: `Playbook "${pb.name}" in cooldown (${pb.cooldown_minutes}m)`,
+          severity: "warning" as const,
+          entity_type: "flight" as const,
+          entity_id: pb.id,
+          // Advisory only — cooldown is by design
+        });
+      }
+    }
+  }
+
+  return results;
+}

@@ -253,3 +253,17 @@ export function evaluateSchedules(_entityId: string): RemediationResult {
     detail: `Evaluated ${result.evaluated} schedule(s): ${result.triggered} triggered, ${result.skipped} skipped${result.errors.length > 0 ? `, ${result.errors.length} error(s)` : ""}`,
   };
 }
+
+/**
+ * Prune expired bee memories (Phase 19).
+ */
+export function pruneMemories(_entityId: string): RemediationResult {
+  const pruned = db.pruneExpiredMemories();
+  logger.info("Beekeeper: pruned expired memories", { pruned });
+  return {
+    action: "pruneMemories",
+    entity_id: "bee_memory",
+    success: true,
+    detail: `Pruned ${pruned} expired memory entries`,
+  };
+}

@@ -16,6 +16,16 @@ const VALID_KEYS: Record<string, { type: "number" | "boolean" | "string"; descri
   default_budget_action: { type: "string", description: "Default action when budget exceeded (warn, pause, cancel)" },
   cache_enabled: { type: "boolean", description: "Enable flight result caching" },
   cache_ttl_hours: { type: "number", description: "Default cache entry TTL in hours" },
+  // Phase 19
+  profile_enabled: { type: "boolean", description: "Enable profile-based config overrides" },
+  active_profile: { type: "string", description: "Name of the currently active config profile" },
+  bee_memory_enabled: { type: "boolean", description: "Enable bee memory persistence" },
+  bee_memory_max_entries: { type: "number", description: "Max memory entries per bee in prompt" },
+  bee_memory_max_chars: { type: "number", description: "Max chars of memory context in prompt" },
+  bee_memory_auto_capture: { type: "boolean", description: "Auto-capture MEMORY: keys from flight output" },
+  playbooks_enabled: { type: "boolean", description: "Enable automated operational playbooks" },
+  memory_retention_days: { type: "number", description: "Days to retain bee memories before cleanup" },
+  playbook_history_retention_days: { type: "number", description: "Days to retain playbook execution history" },
 };
 
 export interface ConfigEntry {
@@ -82,6 +92,21 @@ export function setGlobalConfig(key: string, value: string): { success: true; ke
 }
 
 export function getConfigValue(key: string): string | undefined {
+  // Profile-aware override chain: active profile overrides → hive_config
+  const profileEnabled = db.getHiveConfig("profile_enabled");
+  if (profileEnabled?.value === "true") {
+    const activeProfileName = db.getHiveConfig("active_profile");
+    if (activeProfileName?.value) {
+      const profile = db.getProfile(activeProfileName.value);
+      if (profile) {
+        const overrides = JSON.parse(profile.overrides || "{}") as Record<string, string>;
+        if (key in overrides) {
+          return overrides[key];
+        }
+      }
+    }
+  }
+
   const record = db.getHiveConfig(key);
   return record?.value;
 }

@@ -110,6 +110,21 @@ Multi-agent swarm orchestration for Claude Code. Deploy specialized bees to auto
 | `/hive test delete <test_id>` | Delete a test case |
 | `/hive health` | Show hive health score |
 | `/hive health history` | Show health score history |
+| `/hive tag <N> <key>=<value>` | Tag a swarm |
+| `/hive untag <N> <key>` | Remove a tag |
+| `/hive search <query> [--tag=X] [--from=date] [--to=date]` | Search swarms |
+| `/hive profile create <name>` | Create config profile |
+| `/hive profile list` | List profiles |
+| `/hive profile activate <name>` | Set active profile |
+| `/hive profile delete <name>` | Delete profile |
+| `/hive memory <bee_id>` | View bee memories |
+| `/hive memory clear <bee_id>` | Clear bee memories |
+| `/hive deps [blueprint_id]` | Show blueprint dependencies |
+| `/hive playbook create <name>` | Create operational playbook |
+| `/hive playbook list` | List playbooks |
+| `/hive playbook delete <id>` | Delete playbook |
+| `/hive playbook toggle <id>` | Enable/disable playbook |
+| `/hive playbook history [id]` | View execution history |
 | `/hive-drive <bp> <task>` | Autonomously drive a swarm start-to-finish |
 | `/hive-drive <N>` | Resume driving an existing buzzing swarm |
 
@@ -178,11 +193,16 @@ Multi-agent swarm orchestration for Claude Code. Deploy specialized bees to auto
 | **Dead Letter** | A flight that exhausted retries, queued for manual intervention |
 | **Blueprint Test** | Automated test case for blueprint validation with mock outputs |
 | **Health Score** | Composite 0-100 rating of hive operational health |
+| **Swarm Tag** | Key-value metadata attached to a swarm for filtering and search |
+| **Profile** | Named set of config overrides for environment-specific settings |
+| **Bee Memory** | Persistent cross-swarm key-value context stored per bee |
+| **Blueprint Dependency** | Required blueprints declared via `requires` field |
+| **Playbook** | Automated incident response triggered by operational conditions |
 
 ## Architecture
 
-- **MCP Server** provides 109 tools (`hive_*`) for swarm orchestration
-- **SQLite DB** at `~/.plugin-hive/hive.db` stores all state (includes `hive_config`, `swarm_archives`, `blueprint_versions`, `flight_cache`, `swarm_templates`, `model_routing_log`, `flight_baselines`, `anomaly_alerts`, `nectar_shares`, `registry_cache`, `blueprint_ratings`, `notification_channels`, `notification_routes`, `webhook_tokens`, `webhook_audit_log`, `swarm_schedules`, `schedule_runs`, `circuit_breakers`, `dead_letters`, `blueprint_test_cases`, `blueprint_test_runs`, and `hive_health_snapshots` tables)
+- **MCP Server** provides 127 tools (`hive_*`) for swarm orchestration
+- **SQLite DB** at `~/.plugin-hive/hive.db` stores all state (includes `hive_config`, `swarm_archives`, `blueprint_versions`, `flight_cache`, `swarm_templates`, `model_routing_log`, `flight_baselines`, `anomaly_alerts`, `nectar_shares`, `registry_cache`, `blueprint_ratings`, `notification_channels`, `notification_routes`, `webhook_tokens`, `webhook_audit_log`, `swarm_schedules`, `schedule_runs`, `circuit_breakers`, `dead_letters`, `blueprint_test_cases`, `blueprint_test_runs`, `hive_health_snapshots`, `swarm_tags`, `hive_profiles`, `bee_memory`, `hive_playbooks`, and `playbook_executions` tables)
 - **Flight pipeline** advances automatically as bees complete work
 - **Conditional flights** (`when:`) skip flights based on nectar values
 - **Flight gates** (`gate: approval`) pause for human confirmation
@@ -234,6 +254,11 @@ Multi-agent swarm orchestration for Claude Code. Deploy specialized bees to auto
 - **Dead letter queue** captures flights that exhaust retries without failing the swarm
 - **Blueprint testing** validates blueprints with mock outputs, nectar assertions, and flight status checks
 - **Hive health score** computes composite 0-100 health from 8 weighted factors with trend analysis
+- **Swarm tagging** attaches key=value metadata to swarms; search filters via EXISTS subqueries
+- **Environment profiles** override global config values per-profile; integrated into `getConfigValue()` chain
+- **Bee memory** persists key-value context across swarms with optional TTL and auto-capture from `MEMORY:` output lines
+- **Blueprint dependencies** declare `requires` with Kahn's algorithm cycle detection
+- **Operational playbooks** trigger automated actions on health/failure/circuit/DLQ/queue thresholds with cooldown isolation
 
 ## Workflow
 

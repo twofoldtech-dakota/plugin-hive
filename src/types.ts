@@ -148,6 +148,7 @@ export interface SwarmRecord {
   priority: number;
   schedule_at: string | null;
   parent_flight_id: string | null; // Phase 16: sub-swarm linkage
+  profile: string | null; // Phase 19: bound config profile
   created_at: string;
   updated_at: string;
 }
@@ -255,6 +256,7 @@ export interface BlueprintRecord {
   version: number | null;
   spec: string; // JSON string of BlueprintSpec
   installed_at: string;
+  requires: string | null; // JSON array of blueprint IDs (Phase 19)
 }
 
 // ── Flight Claim Result ──────────────────────────────────────────────
@@ -351,7 +353,23 @@ export type HiveEventType =
   | "blueprint.test_passed"
   | "blueprint.test_failed"
   | "health.snapshot"
-  | "health.alert";
+  | "health.alert"
+  // Phase 19
+  | "swarm.tagged"
+  | "swarm.untagged"
+  | "profile.created"
+  | "profile.activated"
+  | "profile.deleted"
+  | "memory.stored"
+  | "memory.forgotten"
+  | "memory.pruned"
+  | "playbook.created"
+  | "playbook.deleted"
+  | "playbook.toggled"
+  | "playbook.triggered"
+  | "playbook.executed"
+  | "playbook.cooldown"
+  | "blueprint.deps_validated";
 
 // ── Spawn Request (from pollinator) ─────────────────────────────────
 
@@ -1159,4 +1177,124 @@ export interface HealthScoreResult {
   trend: "improving" | "declining" | "stable";
   factors: HealthFactor[];
   computed_at: string;
+}
+
+// ── Phase 19: Swarm Tags ────────────────────────────────────────────
+
+export interface SwarmTagRecord {
+  id: string;
+  swarm_id: string;
+  key: string;
+  value: string;
+  created_at: string;
+}
+
+export interface SwarmSearchFilters {
+  query?: string;
+  status?: SwarmStatus;
+  blueprint_id?: string;
+  tags?: Record<string, string>; // key → value
+  from?: string; // ISO date
+  to?: string; // ISO date
+  limit?: number;
+  offset?: number;
+}
+
+export interface SwarmSearchResult {
+  swarms: Array<SwarmRecord & { tags: Record<string, string> }>;
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+// ── Phase 19: Hive Profiles ─────────────────────────────────────────
+
+export interface HiveProfileRecord {
+  id: string;
+  name: string;
+  description: string | null;
+  overrides: string; // JSON Record<string, string>
+  created_at: string;
+  updated_at: string;
+}
+
+// ── Phase 19: Bee Memory ────────────────────────────────────────────
+
+export interface BeeMemoryRecord {
+  id: string;
+  bee_id: string;
+  namespace: string;
+  key: string;
+  value: string;
+  expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ── Phase 19: Blueprint Dependencies ────────────────────────────────
+
+export interface DependencyGraphNode {
+  id: string;
+  name: string | null;
+  installed: boolean;
+  requires: string[];
+}
+
+export interface DependencyGraphEdge {
+  from: string;
+  to: string;
+}
+
+export interface DependencyGraph {
+  nodes: DependencyGraphNode[];
+  edges: DependencyGraphEdge[];
+  missing: string[];
+  cycles: string[][];
+  valid: boolean;
+}
+
+// ── Phase 19: Playbooks ─────────────────────────────────────────────
+
+export type PlaybookTriggerType =
+  | "health_below"
+  | "swarm_failure_rate"
+  | "circuit_open_count"
+  | "dead_letter_count"
+  | "queue_depth";
+
+export type PlaybookActionType =
+  | "pause_swarms"
+  | "cancel_swarms"
+  | "reset_circuits"
+  | "purge_dlq"
+  | "notify"
+  | "run_maintenance";
+
+export interface PlaybookAction {
+  type: PlaybookActionType;
+  params?: Record<string, string>;
+}
+
+export interface PlaybookRecord {
+  id: string;
+  name: string;
+  description: string | null;
+  trigger_condition: string; // JSON { type: PlaybookTriggerType, threshold: number }
+  actions: string; // JSON PlaybookAction[]
+  cooldown_minutes: number;
+  enabled: number; // 0 or 1
+  last_executed_at: string | null;
+  execution_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PlaybookExecutionRecord {
+  id: string;
+  playbook_id: string;
+  trigger_value: number;
+  actions_taken: string; // JSON
+  results: string; // JSON
+  success: number; // 0 or 1
+  created_at: string;
 }

@@ -1,5 +1,6 @@
 import * as db from "../db.js";
 import { selectModel } from "../routing/model-router.js";
+import { buildMemoryContext } from "../memory/store.js";
 import type {
   BeeRole,
   BeeSpec,
@@ -117,6 +118,12 @@ export function buildBeePrompt(
   // Expected output format
   sections.push(`\n## Expected Output Format\n`);
   sections.push(claimResult.expects);
+
+  // Bee memory context (Phase 19)
+  const memorySection = buildMemoryContext(beeSpec.id, blueprintId);
+  if (memorySection) {
+    sections.push(memorySection);
+  }
 
   // Progress reporting
   sections.push(`\n## Progress Reporting\n`);

@@ -46,6 +46,11 @@ import type {
   BlueprintTestCaseRecord,
   BlueprintTestRunRecord,
   HealthSnapshot,
+  SwarmTagRecord,
+  HiveProfileRecord,
+  BeeMemoryRecord,
+  PlaybookRecord,
+  PlaybookExecutionRecord,
 } from "./types.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -786,6 +791,92 @@ function migrate(db: DatabaseSync): void {
     INSERT OR IGNORE INTO hive_config (key, value) VALUES ('circuit_breaker_timeout_minutes', '10');
     INSERT OR IGNORE INTO hive_config (key, value) VALUES ('health_alert_threshold', '50');
     INSERT OR IGNORE INTO hive_config (key, value) VALUES ('health_snapshot_enabled', 'true');
+  `);
+
+  // Phase 19 — new tables
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS swarm_tags (
+      id TEXT PRIMARY KEY,
+      swarm_id TEXT NOT NULL REFERENCES swarms(id),
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(swarm_id, key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_swarm_tags_swarm ON swarm_tags(swarm_id);
+    CREATE INDEX IF NOT EXISTS idx_swarm_tags_key ON swarm_tags(key);
+
+    CREATE TABLE IF NOT EXISTS hive_profiles (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      description TEXT,
+      overrides TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS bee_memory (
+      id TEXT PRIMARY KEY,
+      bee_id TEXT NOT NULL,
+      namespace TEXT NOT NULL DEFAULT 'default',
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      expires_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(bee_id, namespace, key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_bee_memory_bee ON bee_memory(bee_id);
+    CREATE INDEX IF NOT EXISTS idx_bee_memory_expires ON bee_memory(expires_at);
+
+    CREATE TABLE IF NOT EXISTS hive_playbooks (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      description TEXT,
+      trigger_condition TEXT NOT NULL,
+      actions TEXT NOT NULL DEFAULT '[]',
+      cooldown_minutes INTEGER NOT NULL DEFAULT 30,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      last_executed_at TEXT,
+      execution_count INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS playbook_executions (
+      id TEXT PRIMARY KEY,
+      playbook_id TEXT NOT NULL REFERENCES hive_playbooks(id),
+      trigger_value REAL NOT NULL,
+      actions_taken TEXT NOT NULL DEFAULT '[]',
+      results TEXT NOT NULL DEFAULT '[]',
+      success INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_playbook_executions_pb ON playbook_executions(playbook_id);
+  `);
+
+  // Phase 19 — new columns on swarms
+  const swarmCols19 = db.prepare("PRAGMA table_info(swarms)").all() as Array<{ name: string }>;
+  if (!swarmCols19.some(c => c.name === "profile")) {
+    db.exec("ALTER TABLE swarms ADD COLUMN profile TEXT");
+  }
+
+  // Phase 19 — new columns on blueprints
+  const bpCols19 = db.prepare("PRAGMA table_info(blueprints)").all() as Array<{ name: string }>;
+  if (!bpCols19.some(c => c.name === "requires")) {
+    db.exec("ALTER TABLE blueprints ADD COLUMN requires TEXT");
+  }
+
+  // Phase 19 — seed config
+  db.exec(`
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('profile_enabled', 'false');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('bee_memory_enabled', 'false');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('bee_memory_max_entries', '10');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('bee_memory_max_chars', '2000');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('bee_memory_auto_capture', 'false');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('playbooks_enabled', 'false');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('memory_retention_days', '30');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('playbook_history_retention_days', '14');
   `);
 }
 
@@ -3110,6 +3201,274 @@ export function getActiveBeeSuccessRates(): Array<{ bee_id: string; success_rate
   return db.prepare(
     "SELECT bee_id, success_rate FROM bee_stats WHERE total_flights >= 3 ORDER BY updated_at DESC LIMIT 50",
   ).all() as Array<{ bee_id: string; success_rate: number }>;
+}
+
+// ── Phase 19: Swarm Tags ────────────────────────────────────────────
+
+export function insertSwarmTag(swarmId: string, key: string, value: string): SwarmTagRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    `INSERT INTO swarm_tags (id, swarm_id, key, value) VALUES (?, ?, ?, ?)
+     ON CONFLICT(swarm_id, key) DO UPDATE SET value = excluded.value`,
+  ).run(id, swarmId, key, value);
+  const result = db.prepare("SELECT * FROM swarm_tags WHERE swarm_id = ? AND key = ?").get(swarmId, key);
+  return row<SwarmTagRecord>(result);
+}
+
+export function deleteSwarmTag(swarmId: string, key: string): boolean {
+  const db = getDb();
+  return Number(db.prepare("DELETE FROM swarm_tags WHERE swarm_id = ? AND key = ?").run(swarmId, key).changes) > 0;
+}
+
+export function getSwarmTags(swarmId: string): SwarmTagRecord[] {
+  const db = getDb();
+  return rows<SwarmTagRecord>(db.prepare("SELECT * FROM swarm_tags WHERE swarm_id = ? ORDER BY key ASC").all(swarmId));
+}
+
+export function listTagKeys(): string[] {
+  const db = getDb();
+  const result = db.prepare("SELECT DISTINCT key FROM swarm_tags ORDER BY key ASC").all() as Array<{ key: string }>;
+  return result.map(r => r.key);
+}
+
+export function searchSwarms(filters: {
+  query?: string;
+  status?: SwarmStatus;
+  blueprint_id?: string;
+  tags?: Record<string, string>;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+}): { swarms: SwarmRecord[]; total: number } {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: SQLInputValue[] = [];
+
+  if (filters.query) {
+    conditions.push("(s.task LIKE ? OR s.id LIKE ?)");
+    params.push(`%${filters.query}%`, `%${filters.query}%`);
+  }
+  if (filters.status) {
+    conditions.push("s.status = ?");
+    params.push(filters.status);
+  }
+  if (filters.blueprint_id) {
+    conditions.push("s.blueprint_id = ?");
+    params.push(filters.blueprint_id);
+  }
+  if (filters.from) {
+    conditions.push("s.created_at >= ?");
+    params.push(filters.from);
+  }
+  if (filters.to) {
+    conditions.push("s.created_at <= ?");
+    params.push(filters.to);
+  }
+
+  // Tag filters via EXISTS subqueries
+  if (filters.tags) {
+    for (const [key, value] of Object.entries(filters.tags)) {
+      conditions.push("EXISTS (SELECT 1 FROM swarm_tags t WHERE t.swarm_id = s.id AND t.key = ? AND t.value = ?)");
+      params.push(key, value);
+    }
+  }
+
+  const where = conditions.length > 0 ? "WHERE " + conditions.join(" AND ") : "";
+  const limit = filters.limit ?? 50;
+  const offset = filters.offset ?? 0;
+
+  // Count
+  const countStmt = db.prepare(`SELECT COUNT(*) as total FROM swarms s ${where}`);
+  const total = row<{ total: number }>(params.length > 0 ? countStmt.get(...params) : countStmt.get()).total;
+
+  // Results
+  const dataParams = [...params, limit, offset];
+  const dataStmt = db.prepare(`SELECT s.* FROM swarms s ${where} ORDER BY s.created_at DESC LIMIT ? OFFSET ?`);
+  const swarms = rows<SwarmRecord>(dataStmt.all(...dataParams));
+
+  return { swarms, total };
+}
+
+// ── Phase 19: Hive Profiles ─────────────────────────────────────────
+
+export function insertProfile(name: string, description: string | null, overrides: string): HiveProfileRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO hive_profiles (id, name, description, overrides) VALUES (?, ?, ?, ?)",
+  ).run(id, name, description, overrides);
+  return row<HiveProfileRecord>(db.prepare("SELECT * FROM hive_profiles WHERE id = ?").get(id));
+}
+
+export function getProfile(name: string): HiveProfileRecord | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM hive_profiles WHERE name = ?").get(name);
+  return result ? row<HiveProfileRecord>(result) : undefined;
+}
+
+export function getProfileById(id: string): HiveProfileRecord | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM hive_profiles WHERE id = ?").get(id);
+  return result ? row<HiveProfileRecord>(result) : undefined;
+}
+
+export function listProfiles(): HiveProfileRecord[] {
+  const db = getDb();
+  return rows<HiveProfileRecord>(db.prepare("SELECT * FROM hive_profiles ORDER BY name ASC").all());
+}
+
+export function deleteProfile(name: string): boolean {
+  const db = getDb();
+  return Number(db.prepare("DELETE FROM hive_profiles WHERE name = ?").run(name).changes) > 0;
+}
+
+export function updateProfile(name: string, updates: Partial<Pick<HiveProfileRecord, "description" | "overrides">>): void {
+  const db = getDb();
+  const sets: string[] = ["updated_at = datetime('now')"];
+  const params: SQLInputValue[] = [];
+  if (updates.description !== undefined) { sets.push("description = ?"); params.push(updates.description); }
+  if (updates.overrides !== undefined) { sets.push("overrides = ?"); params.push(updates.overrides); }
+  params.push(name);
+  db.prepare(`UPDATE hive_profiles SET ${sets.join(", ")} WHERE name = ?`).run(...params);
+}
+
+// ── Phase 19: Bee Memory ────────────────────────────────────────────
+
+export function upsertBeeMemory(beeId: string, namespace: string, key: string, value: string, expiresAt?: string): BeeMemoryRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    `INSERT INTO bee_memory (id, bee_id, namespace, key, value, expires_at) VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(bee_id, namespace, key) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at, updated_at = datetime('now')`,
+  ).run(id, beeId, namespace, key, value, expiresAt ?? null);
+  const result = db.prepare("SELECT * FROM bee_memory WHERE bee_id = ? AND namespace = ? AND key = ?").get(beeId, namespace, key);
+  return row<BeeMemoryRecord>(result);
+}
+
+export function getBeeMemories(beeId: string, namespace?: string): BeeMemoryRecord[] {
+  const db = getDb();
+  if (namespace) {
+    return rows<BeeMemoryRecord>(
+      db.prepare("SELECT * FROM bee_memory WHERE bee_id = ? AND namespace = ? AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY updated_at DESC").all(beeId, namespace),
+    );
+  }
+  return rows<BeeMemoryRecord>(
+    db.prepare("SELECT * FROM bee_memory WHERE bee_id = ? AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY updated_at DESC").all(beeId),
+  );
+}
+
+export function deleteBeeMemory(beeId: string, namespace?: string, key?: string): number {
+  const db = getDb();
+  if (key && namespace) {
+    return Number(db.prepare("DELETE FROM bee_memory WHERE bee_id = ? AND namespace = ? AND key = ?").run(beeId, namespace, key).changes);
+  }
+  if (namespace) {
+    return Number(db.prepare("DELETE FROM bee_memory WHERE bee_id = ? AND namespace = ?").run(beeId, namespace).changes);
+  }
+  return Number(db.prepare("DELETE FROM bee_memory WHERE bee_id = ?").run(beeId).changes);
+}
+
+export function pruneExpiredMemories(): number {
+  const db = getDb();
+  return Number(db.prepare("DELETE FROM bee_memory WHERE expires_at IS NOT NULL AND expires_at <= datetime('now')").run().changes);
+}
+
+export function getBeeMemoryStats(): { total_entries: number; total_bees: number; expired: number } {
+  const db = getDb();
+  const total = row<{ count: number }>(db.prepare("SELECT COUNT(*) as count FROM bee_memory").get()).count;
+  const bees = row<{ count: number }>(db.prepare("SELECT COUNT(DISTINCT bee_id) as count FROM bee_memory").get()).count;
+  const expired = row<{ count: number }>(db.prepare("SELECT COUNT(*) as count FROM bee_memory WHERE expires_at IS NOT NULL AND expires_at <= datetime('now')").get()).count;
+  return { total_entries: total, total_bees: bees, expired };
+}
+
+// ── Phase 19: Playbooks ─────────────────────────────────────────────
+
+export function insertPlaybook(
+  name: string,
+  description: string | null,
+  triggerCondition: string,
+  actions: string,
+  cooldownMinutes: number = 30,
+): PlaybookRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO hive_playbooks (id, name, description, trigger_condition, actions, cooldown_minutes) VALUES (?, ?, ?, ?, ?, ?)",
+  ).run(id, name, description, triggerCondition, actions, cooldownMinutes);
+  return row<PlaybookRecord>(db.prepare("SELECT * FROM hive_playbooks WHERE id = ?").get(id));
+}
+
+export function getPlaybook(id: string): PlaybookRecord | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM hive_playbooks WHERE id = ?").get(id);
+  return result ? row<PlaybookRecord>(result) : undefined;
+}
+
+export function getPlaybookByName(name: string): PlaybookRecord | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM hive_playbooks WHERE name = ?").get(name);
+  return result ? row<PlaybookRecord>(result) : undefined;
+}
+
+export function listPlaybooks(enabled?: boolean): PlaybookRecord[] {
+  const db = getDb();
+  if (enabled !== undefined) {
+    return rows<PlaybookRecord>(db.prepare("SELECT * FROM hive_playbooks WHERE enabled = ? ORDER BY name ASC").all(enabled ? 1 : 0));
+  }
+  return rows<PlaybookRecord>(db.prepare("SELECT * FROM hive_playbooks ORDER BY name ASC").all());
+}
+
+export function deletePlaybook(id: string): boolean {
+  const db = getDb();
+  db.prepare("DELETE FROM playbook_executions WHERE playbook_id = ?").run(id);
+  return Number(db.prepare("DELETE FROM hive_playbooks WHERE id = ?").run(id).changes) > 0;
+}
+
+export function updatePlaybook(
+  id: string,
+  updates: Partial<Pick<PlaybookRecord, "enabled" | "last_executed_at" | "execution_count" | "description" | "actions" | "trigger_condition" | "cooldown_minutes">>,
+): void {
+  const db = getDb();
+  const sets: string[] = ["updated_at = datetime('now')"];
+  const params: SQLInputValue[] = [];
+  if (updates.enabled !== undefined) { sets.push("enabled = ?"); params.push(updates.enabled); }
+  if (updates.last_executed_at !== undefined) { sets.push("last_executed_at = ?"); params.push(updates.last_executed_at); }
+  if (updates.execution_count !== undefined) { sets.push("execution_count = ?"); params.push(updates.execution_count); }
+  if (updates.description !== undefined) { sets.push("description = ?"); params.push(updates.description); }
+  if (updates.actions !== undefined) { sets.push("actions = ?"); params.push(updates.actions); }
+  if (updates.trigger_condition !== undefined) { sets.push("trigger_condition = ?"); params.push(updates.trigger_condition); }
+  if (updates.cooldown_minutes !== undefined) { sets.push("cooldown_minutes = ?"); params.push(updates.cooldown_minutes); }
+  params.push(id);
+  db.prepare(`UPDATE hive_playbooks SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+}
+
+export function insertPlaybookExecution(
+  playbookId: string,
+  triggerValue: number,
+  actionsTaken: string,
+  results: string,
+  success: boolean,
+): PlaybookExecutionRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO playbook_executions (id, playbook_id, trigger_value, actions_taken, results, success) VALUES (?, ?, ?, ?, ?, ?)",
+  ).run(id, playbookId, triggerValue, actionsTaken, results, success ? 1 : 0);
+  return row<PlaybookExecutionRecord>(db.prepare("SELECT * FROM playbook_executions WHERE id = ?").get(id));
+}
+
+export function getPlaybookExecutions(playbookId?: string, limit: number = 20): PlaybookExecutionRecord[] {
+  const db = getDb();
+  if (playbookId) {
+    return rows<PlaybookExecutionRecord>(
+      db.prepare("SELECT * FROM playbook_executions WHERE playbook_id = ? ORDER BY created_at DESC LIMIT ?").all(playbookId, limit),
+    );
+  }
+  return rows<PlaybookExecutionRecord>(
+    db.prepare("SELECT * FROM playbook_executions ORDER BY created_at DESC LIMIT ?").all(limit),
+  );
 }
 
 /** Close the database connection */

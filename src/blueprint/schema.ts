@@ -155,6 +155,7 @@ export const BlueprintSpecSchema = z
     inputs: z.array(InputSpecSchema).optional(),
     beekeeper: BeekeeperConfigSchema.optional(),
     triggers: z.array(TriggerSpecSchema).optional(),
+    requires: z.array(z.string().min(1)).optional(),
   })
   .superRefine((blueprint, ctx) => {
     // When extending, bees and flights may be empty (will be resolved at install)
