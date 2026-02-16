@@ -3,6 +3,8 @@ import * as db from "../db.js";
 import { eventsPath, ensureDataDir } from "./paths.js";
 import { logger } from "./logger.js";
 import { processEventForWebhook } from "../notification/webhook.js";
+import { broadcastEvent } from "../observatory/stream.js";
+import { routeEventToChannels } from "../notification/router.js";
 import type { HiveEventType, EventRecord } from "../types.js";
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -42,6 +44,12 @@ export function emitEvent(opts: EmitEventOptions): EventEmitResult {
     } else {
       processEventForWebhook(event);
     }
+
+    // 4. SSE broadcast to connected clients
+    broadcastEvent(event);
+
+    // 5. Route to v2 notification channels
+    routeEventToChannels(event);
 
     return { success: true, event };
   } catch (err) {

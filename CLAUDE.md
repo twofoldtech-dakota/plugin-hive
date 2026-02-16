@@ -71,6 +71,28 @@ Multi-agent swarm orchestration for Claude Code. Deploy specialized bees to auto
 | `/hive template save <name> <bp>` | Save a swarm template |
 | `/hive template list` | List saved templates |
 | `/hive template run <name> <task>` | Start swarm from a saved template |
+| `/hive dag <N>` | Show DAG visualization for swarm #N |
+| `/hive subswarm <flight_id>` | Check sub-swarm status for a flight |
+| `/hive routing [flight_id]` | View model routing history |
+| `/hive anomalies [--severity=X]` | List anomaly alerts |
+| `/hive anomaly ack <alert_id>` | Acknowledge an anomaly alert |
+| `/hive baselines [blueprint_id]` | View performance baselines |
+| `/hive stream status` | Check SSE stream status |
+| `/hive nectar shares <N>` | List nectar shares for swarm #N |
+| `/hive nectar resolve <N>` | Resolve a nectar reference |
+| `/hive registry search <query>` | Search the blueprint registry |
+| `/hive registry install <id>` | Install a blueprint from the registry |
+| `/hive rate <id> <1-5> [comment]` | Rate a blueprint |
+| `/hive channel create <name> <type>` | Create a notification channel |
+| `/hive channel list` | List notification channels |
+| `/hive channel delete <id>` | Delete a notification channel |
+| `/hive route create <channel> <pattern>` | Create a notification route |
+| `/hive route list` | List notification routes |
+| `/hive route delete <id>` | Delete a notification route |
+| `/hive webhook token create <name>` | Create an inbound webhook token |
+| `/hive webhook token list` | List webhook tokens |
+| `/hive webhook token revoke <id>` | Revoke a webhook token |
+| `/hive webhook audit` | View webhook audit log |
 | `/hive-drive <bp> <task>` | Autonomously drive a swarm start-to-finish |
 | `/hive-drive <N>` | Resume driving an existing buzzing swarm |
 
@@ -121,11 +143,24 @@ Multi-agent swarm orchestration for Claude Code. Deploy specialized bees to auto
 | **Swarm Comparison** | Side-by-side analysis of two swarm runs (flights, nectar, timing, tokens) |
 | **Dynamic Pipeline** | Runtime modification of live pipelines (inject/skip flights) |
 | **Swarm Template** | Named reusable swarm configuration (blueprint, variables, priority) |
+| **Sub-swarm** | A child swarm launched by a parent flight for blueprint composition |
+| **Failover** | Alternative bee/model chain applied on flight retry failure |
+| **Model Routing** | Rule-based model selection per bee (fast/balanced/quality tiers) |
+| **Anomaly Detection** | Statistical deviation alerting based on flight performance baselines |
+| **Baseline** | Historical mean/stddev for a (blueprint, flight, metric) triple |
+| **DAG View** | Dependency graph visualization of a swarm's flight pipeline |
+| **Event Stream** | Real-time SSE feed of hive events with optional filters |
+| **Nectar Ref** | Cross-swarm nectar import declaration on a flight |
+| **Registry** | Remote index of community blueprints with local caching |
+| **Notification Channel** | Named delivery target (webhook, Slack, Discord, PagerDuty) |
+| **Notification Route** | Glob-pattern rule mapping events to channels |
+| **Inbound Webhook** | Authenticated HTTP endpoint for external system integration |
+| **Webhook Token** | Bearer token with scoped permissions for inbound webhooks |
 
 ## Architecture
 
-- **MCP Server** provides 70 tools (`hive_*`) for swarm orchestration
-- **SQLite DB** at `~/.plugin-hive/hive.db` stores all state (includes `hive_config`, `swarm_archives`, `blueprint_versions`, `flight_cache`, and `swarm_templates` tables)
+- **MCP Server** provides 92 tools (`hive_*`) for swarm orchestration
+- **SQLite DB** at `~/.plugin-hive/hive.db` stores all state (includes `hive_config`, `swarm_archives`, `blueprint_versions`, `flight_cache`, `swarm_templates`, `model_routing_log`, `flight_baselines`, `anomaly_alerts`, `nectar_shares`, `registry_cache`, `blueprint_ratings`, `notification_channels`, `notification_routes`, `webhook_tokens`, and `webhook_audit_log` tables)
 - **Flight pipeline** advances automatically as bees complete work
 - **Conditional flights** (`when:`) skip flights based on nectar values
 - **Flight gates** (`gate: approval`) pause for human confirmation
@@ -162,6 +197,16 @@ Multi-agent swarm orchestration for Claude Code. Deploy specialized bees to auto
 - **Swarm comparison** produces side-by-side analysis of two runs (flights, nectar, timing, tokens)
 - **Dynamic pipelines** allow runtime injection of new flights and manual skipping of pending flights
 - **Swarm templates** save named configurations for recurring tasks with variable/priority overrides
+- **DAG visualization** computes dependency graphs with critical path and parallelism ratio
+- **Flight failover** provides alternative bee/model chains applied automatically on retry
+- **Model routing** selects models per-flight based on configurable rules and tier mapping (fast/balanced/quality)
+- **Anomaly detection** computes statistical baselines and alerts on sigma deviations (warning/critical)
+- **Sub-swarms** compose blueprints by launching child swarms from parent flights with nectar mapping
+- **Event streaming** (SSE) broadcasts real-time events to connected clients with optional filters
+- **Cross-swarm nectar** shares data between swarms via `nectar_refs` declarations on flights
+- **Blueprint registry** syncs community blueprints from remote JSON indexes with local caching and ratings
+- **Notification channels v2** routes events to webhook, Slack, Discord, and PagerDuty via glob-pattern rules
+- **Inbound webhooks** provide authenticated HTTP endpoints for external systems to start swarms, approve gates, set nectar, and stop swarms
 
 ## Workflow
 

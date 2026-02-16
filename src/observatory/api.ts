@@ -9,6 +9,10 @@ import { getFleetMetrics } from "../metrics/fleet.js";
 import { getBudgetStatus } from "../budget/budget.js";
 import { getCacheStatus } from "../cache/cache.js";
 import { compareSwarms } from "../compare/compare.js";
+import { computeDAG } from "./dag.js";
+import { handleStreamRequest, getStreamStatus } from "./stream.js";
+import { handleInboundWebhook, getAuditLog } from "../webhook/inbound.js";
+import { searchRegistry } from "../registry/client.js";
 import type { SwarmStatus } from "../types.js";
 
 const VALID_SWARM_STATUSES = new Set<string>(["buzzing", "paused", "blocked", "completed", "failed", "cancelled", "scheduled", "queued"]);
@@ -303,6 +307,71 @@ export function handleRequest(req: IncomingMessage, res: ServerResponse): void {
         return;
       }
       json(res, result.comparison);
+      return;
+    }
+
+    // ── Phase 16-17: New API endpoints ──────────────────────────────
+
+    // GET /api/swarms/:id/dag
+    const dagMatch = path.match(/^\/api\/swarms\/([^/]+)\/dag$/);
+    if (dagMatch && req.method === "GET") {
+      const result = computeDAG(dagMatch[1]);
+      if (!result.success) {
+        notFound(res, result.error);
+        return;
+      }
+      json(res, result.dag);
+      return;
+    }
+
+    // GET /api/stream — SSE endpoint
+    if (path === "/api/stream" && req.method === "GET") {
+      handleStreamRequest(req, res);
+      return;
+    }
+
+    // GET /api/stream/status
+    if (path === "/api/stream/status" && req.method === "GET") {
+      json(res, getStreamStatus());
+      return;
+    }
+
+    // GET /api/registry
+    if (path === "/api/registry" && req.method === "GET") {
+      const query = url.searchParams.get("q") ?? "";
+      const registryUrl = url.searchParams.get("registry") ?? undefined;
+      json(res, searchRegistry(query, registryUrl));
+      return;
+    }
+
+    // GET /api/registry/search
+    if (path === "/api/registry/search" && req.method === "GET") {
+      const query = url.searchParams.get("q") ?? "";
+      json(res, searchRegistry(query));
+      return;
+    }
+
+    // GET /api/blueprints/:id/ratings
+    const ratingsMatch = path.match(/^\/api\/blueprints\/([^/]+)\/ratings$/);
+    if (ratingsMatch && req.method === "GET") {
+      json(res, db.getBlueprintRatings(ratingsMatch[1]));
+      return;
+    }
+
+    // GET /api/webhook/audit
+    if (path === "/api/webhook/audit" && req.method === "GET") {
+      const tokenId = url.searchParams.get("token_id") ?? undefined;
+      const limit = url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!, 10) : 50;
+      json(res, getAuditLog({ token_id: tokenId, limit }));
+      return;
+    }
+
+    // POST /api/webhook/* — Inbound webhooks
+    if (path.startsWith("/api/webhook/") && req.method === "POST") {
+      handleInboundWebhook(req, res, path).catch((err) => {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err instanceof Error ? err.message : "Internal error" }));
+      });
       return;
     }
 

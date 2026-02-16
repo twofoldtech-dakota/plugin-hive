@@ -6,6 +6,7 @@ import { logger } from "../lib/logger.js";
 import { nowUtc } from "../lib/time.js";
 import { archiveSwarm as doArchiveSwarm } from "../archive/archive.js";
 import { runMaintenance } from "../maintenance/janitor.js";
+import { handleSubSwarmFailure } from "../flight/sub-swarm.js";
 import type { RemediationResult } from "../types.js";
 
 /**
@@ -190,6 +191,35 @@ export function cleanExpiredCache(_entityId: string): RemediationResult {
     success: true,
     detail: `Deleted ${deleted} expired cache entries`,
   };
+}
+
+/**
+ * Handle sub-swarm timeout: fail the child swarm and propagate failure to parent.
+ */
+export function timeoutSubSwarm(flightId: string): RemediationResult {
+  const flight = db.getFlight(flightId);
+  if (!flight || !flight.child_swarm_id) {
+    return { action: "timeoutSubSwarm", entity_id: flightId, success: false, detail: "Flight not found or no child swarm" };
+  }
+
+  const childSwarm = db.getSwarm(flight.child_swarm_id);
+  if (!childSwarm) {
+    return { action: "timeoutSubSwarm", entity_id: flightId, success: false, detail: "Child swarm not found" };
+  }
+
+  // Fail the child swarm
+  db.updateSwarm(childSwarm.id, { status: "failed" });
+  emitEvent({
+    eventType: "subswarm.timeout",
+    swarmId: flight.swarm_id,
+    payload: { parent_flight_id: flight.id, child_swarm_id: childSwarm.id },
+  });
+
+  // Propagate failure to parent
+  handleSubSwarmFailure(childSwarm);
+
+  logger.info("Beekeeper: sub-swarm timed out", { flightId, childSwarmId: childSwarm.id });
+  return { action: "timeoutSubSwarm", entity_id: flightId, success: true, detail: `Sub-swarm ${childSwarm.id.slice(0, 8)} timed out and failed` };
 }
 
 /**

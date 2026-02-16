@@ -49,8 +49,11 @@ export type GateSpec = "approval" | GatePolicy;
 export interface FlightSpec {
   id: string;
   bee: string;
-  type: "single" | "loop";
+  type: "single" | "loop" | "sub_swarm";
   loop?: LoopConfig;
+  sub_swarm?: SubSwarmConfig;
+  failover?: FailoverStep[];
+  nectar_refs?: NectarRef[];
   depends_on?: string[];
   when?: string;
   gate?: GateSpec;
@@ -143,6 +146,7 @@ export interface SwarmRecord {
   trigger_config: string | null; // JSON string of TriggerSpec
   priority: number;
   schedule_at: string | null;
+  parent_flight_id: string | null; // Phase 16: sub-swarm linkage
   created_at: string;
   updated_at: string;
 }
@@ -153,7 +157,8 @@ export type FlightStatus =
   | "in_flight"
   | "done"
   | "failed"
-  | "gated";
+  | "gated"
+  | "sub_swarm";
 
 export interface FlightRecord {
   id: string;
@@ -167,7 +172,7 @@ export interface FlightRecord {
   output: string | null;
   retry_count: number;
   max_retries: number;
-  type: "single" | "loop";
+  type: "single" | "loop" | "sub_swarm";
   loop_config: string | null; // JSON string of LoopConfig
   current_cell_id: string | null;
   abandoned_count: number;
@@ -186,6 +191,14 @@ export interface FlightRecord {
   completed_at: string | null;
   created_at: string;
   updated_at: string;
+  // Phase 16
+  sub_swarm_config: string | null; // JSON string of SubSwarmConfig
+  child_swarm_id: string | null;
+  failover_config: string | null; // JSON string of FailoverStep[]
+  model_override: string | null;
+  original_bee_id: string | null;
+  // Phase 17
+  nectar_refs: string | null; // JSON string of NectarRef[]
 }
 
 export type CellStatus =
@@ -247,7 +260,7 @@ export interface FlightClaimResult {
   swarm_id: string;
   resolved_input: string;
   expects: string;
-  type: "single" | "loop";
+  type: "single" | "loop" | "sub_swarm";
   cell?: {
     id: string;
     cell_id: string;
@@ -298,7 +311,27 @@ export type HiveEventType =
   | "flight.injected"
   | "flight.skipped_manual"
   | "template.created"
-  | "template.deleted";
+  | "template.deleted"
+  // Phase 16
+  | "subswarm.started"
+  | "subswarm.completed"
+  | "subswarm.failed"
+  | "subswarm.timeout"
+  | "flight.model_routed"
+  | "anomaly.detected"
+  | "anomaly.acknowledged"
+  | "flight.failover"
+  // Phase 17
+  | "nectar.shared"
+  | "nectar.share_failed"
+  | "registry.synced"
+  | "blueprint.rated"
+  | "channel.created"
+  | "channel.deleted"
+  | "route.created"
+  | "webhook.inbound"
+  | "webhook.token_created"
+  | "webhook.token_revoked";
 
 // ── Spawn Request (from pollinator) ─────────────────────────────────
 
@@ -571,7 +604,7 @@ export interface BlueprintBundle {
 export interface FlightEstimate {
   flight_id: string;
   bee_id: string;
-  type: "single" | "loop";
+  type: "single" | "loop" | "sub_swarm";
   estimated_duration_seconds: number;
   estimated_tokens: number;
   estimated_cells: number | null;
@@ -766,4 +799,217 @@ export interface NectarGetResult {
   nectar: Record<string, string>;
   key?: string;
   value?: string;
+}
+
+// ── Phase 16: Sub-swarm Config ──────────────────────────────────────
+
+export interface SubSwarmConfig {
+  blueprint: string;
+  task_template: string;
+  variables?: Record<string, string>;
+  nectar_map?: Record<string, string>; // child_key → parent_nectar_key
+  timeout_minutes?: number;
+}
+
+// ── Phase 16: Model Routing ─────────────────────────────────────────
+
+export type ModelTier = "fast" | "balanced" | "quality";
+
+export interface ModelRoutingRule {
+  condition: string; // "retry_count > 0", "flight.type == loop", etc.
+  tier: ModelTier;
+}
+
+export interface ModelRoutingConfig {
+  default_tier: ModelTier;
+  tiers: Record<ModelTier, string>; // tier → model name
+  rules?: ModelRoutingRule[];
+}
+
+export interface ModelRoutingLogRecord {
+  id: string;
+  flight_id: string;
+  swarm_id: string;
+  bee_id: string;
+  selected_tier: ModelTier;
+  selected_model: string;
+  reason: string;
+  created_at: string;
+}
+
+// ── Phase 16: Anomaly Detection ─────────────────────────────────────
+
+export interface FlightBaselineRecord {
+  id: string;
+  blueprint_id: string;
+  flight_id: string;
+  metric: string; // "duration_seconds" | "tokens" | "failure_rate"
+  mean: number;
+  stddev: number;
+  sample_count: number;
+  updated_at: string;
+}
+
+export interface AnomalyAlertRecord {
+  id: string;
+  swarm_id: string;
+  flight_id: string;
+  blueprint_id: string;
+  metric: string;
+  observed_value: number;
+  expected_mean: number;
+  expected_stddev: number;
+  sigma_deviation: number;
+  severity: "warning" | "critical";
+  acknowledged: number; // 0 or 1
+  created_at: string;
+}
+
+// ── Phase 16: Failover ──────────────────────────────────────────────
+
+export interface FailoverStep {
+  bee?: string;
+  model?: string;
+  max_retries?: number;
+}
+
+// ── Phase 16: DAG Visualization ─────────────────────────────────────
+
+export interface DAGNode {
+  id: string;
+  bee_id: string;
+  type: "single" | "loop" | "sub_swarm";
+  status: FlightStatus;
+  duration_seconds: number | null;
+  layer: number;
+}
+
+export interface DAGEdge {
+  from: string;
+  to: string;
+}
+
+export interface DAGView {
+  nodes: DAGNode[];
+  edges: DAGEdge[];
+  critical_path: string[];
+  parallelism_ratio: number;
+  total_layers: number;
+}
+
+// ── Phase 17: Nectar Sharing ────────────────────────────────────────
+
+export interface NectarRef {
+  key: string;
+  from_swarm: string; // swarm ID, template var, or "latest:<blueprint_id>"
+  from_key: string;
+  required?: boolean;
+}
+
+export interface NectarShareRecord {
+  id: string;
+  target_swarm_id: string;
+  target_flight_id: string;
+  source_swarm_id: string;
+  key: string;
+  from_key: string;
+  value: string | null;
+  resolved_at: string | null;
+  created_at: string;
+}
+
+// ── Phase 17: Registry ──────────────────────────────────────────────
+
+export interface RegistryCacheRecord {
+  id: string;
+  registry_url: string;
+  blueprint_id: string;
+  name: string | null;
+  description: string | null;
+  version: number | null;
+  author: string | null;
+  tags: string | null; // JSON array
+  cached_at: string;
+}
+
+export interface BlueprintRatingRecord {
+  id: string;
+  blueprint_id: string;
+  rating: number; // 1-5
+  comment: string | null;
+  created_at: string;
+}
+
+// ── Phase 17: Notification Channels ─────────────────────────────────
+
+export type NotificationChannelType = "webhook" | "slack" | "discord" | "pagerduty";
+
+export interface NotificationChannelRecord {
+  id: string;
+  name: string;
+  channel_type: NotificationChannelType;
+  config: string; // JSON
+  enabled: number; // 0 or 1
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NotificationRouteRecord {
+  id: string;
+  event_pattern: string; // glob pattern like "swarm.*", "flight.failed"
+  channel_id: string;
+  priority: number;
+  created_at: string;
+}
+
+export interface SlackChannelConfig {
+  webhook_url: string;
+  channel?: string;
+  username?: string;
+  icon_emoji?: string;
+}
+
+export interface DiscordChannelConfig {
+  webhook_url: string;
+  username?: string;
+  avatar_url?: string;
+}
+
+export interface PagerDutyChannelConfig {
+  routing_key: string;
+  severity?: "critical" | "error" | "warning" | "info";
+}
+
+export interface WebhookChannelConfig {
+  url: string;
+  headers?: Record<string, string>;
+  format?: "standard" | "slack" | "discord";
+}
+
+// ── Phase 17: Inbound Webhooks ──────────────────────────────────────
+
+export type InboundWebhookPermission =
+  | "swarm:start"
+  | "gate:approve"
+  | "nectar:set"
+  | "swarm:stop";
+
+export interface WebhookTokenRecord {
+  id: string;
+  name: string;
+  token_hash: string;
+  permissions: string; // JSON array of InboundWebhookPermission
+  expires_at: string | null;
+  created_at: string;
+  revoked_at: string | null;
+}
+
+export interface WebhookAuditRecord {
+  id: string;
+  token_id: string;
+  action: string;
+  payload: string | null; // JSON
+  ip_address: string | null;
+  status: "success" | "denied" | "error";
+  created_at: string;
 }

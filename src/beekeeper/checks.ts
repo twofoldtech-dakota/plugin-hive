@@ -332,6 +332,53 @@ export function checkBudgetOverruns(): CheckResult[] {
 }
 
 /**
+ * Check for sub-swarm flights that have exceeded their timeout.
+ */
+export function checkSubSwarmTimeouts(): CheckResult[] {
+  const subSwarmFlights = db.getSubSwarmFlights();
+  const results: CheckResult[] = [];
+
+  for (const f of subSwarmFlights) {
+    if (!f.sub_swarm_config || !f.child_swarm_id) continue;
+    let config;
+    try {
+      config = JSON.parse(f.sub_swarm_config);
+    } catch {
+      continue;
+    }
+    if (!config.timeout_minutes) continue;
+
+    const startedAt = f.started_at ?? f.updated_at;
+    const elapsed = (Date.now() - new Date(startedAt.replace(" ", "T") + "Z").getTime()) / (1000 * 60);
+    if (elapsed >= config.timeout_minutes) {
+      results.push({
+        issue: `Sub-swarm flight "${f.flight_id}" timed out (${Math.round(elapsed)}/${config.timeout_minutes} min)`,
+        severity: "critical" as const,
+        entity_type: "flight" as const,
+        entity_id: f.id,
+        remediation: "timeoutSubSwarm",
+      });
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Check for unacknowledged critical anomaly alerts.
+ */
+export function checkCriticalAnomalies(): CheckResult[] {
+  const alerts = db.getUnacknowledgedCriticalAlerts();
+  return alerts.map((a) => ({
+    issue: `Critical anomaly: ${a.metric} deviation of ${a.sigma_deviation}σ on flight "${a.flight_id}" (blueprint: ${a.blueprint_id})`,
+    severity: "critical" as const,
+    entity_type: "flight" as const,
+    entity_id: a.id,
+    // Advisory only — anomalies don't have automatic remediation
+  }));
+}
+
+/**
  * Advisory check: flag expired cache entries for cleanup.
  */
 export function checkExpiredCache(): CheckResult[] {

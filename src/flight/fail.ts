@@ -7,6 +7,7 @@ import { safeJsonParse } from "../lib/json.js";
 import { insertTrace } from "../trace/record.js";
 import { checkAndFireTriggers } from "../chain/trigger.js";
 import { updateBeeStats } from "../usage/bee-stats.js";
+import { resolveFailover, applyFailover } from "./failover.js";
 import type { RetryStrategy } from "../types.js";
 
 export type FailFlightResult =
@@ -40,6 +41,12 @@ export function failFlight(flightId: string, error: string, context?: string): F
     const newRetryCount = flight.retry_count + 1;
     const delaySeconds = computeRetryDelay(strategy, newRetryCount);
     const retryAt = computeRetryAt(delaySeconds);
+
+    // Apply failover if configured
+    const failoverStep = resolveFailover(flight);
+    if (failoverStep) {
+      applyFailover(flight.id, flight.swarm_id, failoverStep, flight.bee_id);
+    }
 
     db.updateFlight(flightId, {
       status: "pending",

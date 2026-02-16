@@ -7,6 +7,8 @@ import { parseGateSpec, resolveGatePolicy, shouldAutoApprove } from "../flight/g
 import { checkAndFireTriggers } from "../chain/trigger.js";
 import { checkpointOnTransition } from "../snapshot/checkpoint.js";
 import { promoteQueuedSwarms } from "../concurrency/enforce.js";
+import { launchSubSwarm } from "../flight/sub-swarm.js";
+import { handleSubSwarmCompletion } from "../flight/sub-swarm.js";
 import { nowUtc } from "../lib/time.js";
 import type { AdvanceResult, FlightRecord } from "../types.js";
 
@@ -103,6 +105,18 @@ function promoteOrGate(flight: FlightRecord, swarmId: string): "promoted" | "ski
     emitEvent({ eventType: "flight.gated", swarmId, payload: { flight_id: flight.flight_id, gate: flight.gate } });
     logger.info("Flight gated", { flightId: flight.flight_id, gate: flight.gate });
     return "gated";
+  }
+
+  // Handle sub_swarm flight type: launch child swarm instead of marking pending
+  if (flight.type === "sub_swarm") {
+    const result = launchSubSwarm(flight, swarmId);
+    if (result.success) {
+      return "promoted";
+    }
+    // Sub-swarm launch failed — treat as skip with error
+    db.updateFlight(flight.id, { status: "failed", output: result.error });
+    emitEvent({ eventType: "flight.failed", swarmId, payload: { flight_id: flight.flight_id, error: result.error } });
+    return "skipped";
   }
 
   // Normal promotion

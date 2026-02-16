@@ -112,6 +112,9 @@ export function createSwarmFromBlueprint(blueprintId: string, task: string, vari
       flight.retry_strategy ? JSON.stringify(flight.retry_strategy) : undefined,
       flight.produces,
       flight.requires,
+      flight.sub_swarm ? JSON.stringify(flight.sub_swarm) : undefined,
+      flight.failover ? JSON.stringify(flight.failover) : undefined,
+      flight.nectar_refs ? JSON.stringify(flight.nectar_refs) : undefined,
     );
     flightIndex++;
     insertedCount++;

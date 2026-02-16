@@ -22,6 +22,8 @@ import {
   checkAdaptiveTuning,
   checkBudgetOverruns,
   checkExpiredCache,
+  checkSubSwarmTimeouts,
+  checkCriticalAnomalies,
 } from "./checks.js";
 import {
   resetStuckFlight,
@@ -36,8 +38,11 @@ import {
   autoMaintain,
   resolveExpiredGate,
   cleanExpiredCache,
+  timeoutSubSwarm,
 } from "./remediate.js";
 import { emitEvent } from "../lib/events.js";
+import { refreshAllBaselines } from "../anomaly/baselines.js";
+import { handleSubSwarmFailure } from "../flight/sub-swarm.js";
 import type { CheckResult, BeekeeperReport, BlueprintSpec } from "../types.js";
 
 function promoteScheduledSwarm(swarmId: string): { success: boolean } {
@@ -72,6 +77,7 @@ const remediationMap: Record<string, (entityId: string) => { success: boolean }>
   autoMaintain,
   resolveExpiredGate,
   cleanExpiredCache,
+  timeoutSubSwarm,
 };
 
 /**
@@ -95,7 +101,12 @@ export function runBeekeeperCheck(): BeekeeperReport {
     ...checkAdaptiveTuning(),
     ...checkBudgetOverruns(),
     ...checkExpiredCache(),
+    ...checkSubSwarmTimeouts(),
+    ...checkCriticalAnomalies(),
   ];
+
+  // Periodic baseline refresh for anomaly detection
+  refreshAllBaselines();
 
   // Per-swarm checks (verification loops, stuck cells)
   const buzzingSwarms = db.listSwarms({ status: "buzzing" });

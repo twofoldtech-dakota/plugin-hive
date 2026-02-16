@@ -58,7 +58,19 @@ import { getCacheStatus, clearCache } from "./cache/cache.js";
 import { compareSwarms } from "./compare/compare.js";
 import { injectFlight, skipFlight } from "./pipeline/dynamic.js";
 import { saveTemplate, listSavedTemplates, runTemplate } from "./swarm/templates.js";
-import type { BlueprintSpec, GatePolicy, HiveEventType } from "./types.js";
+import { computeDAG } from "./observatory/dag.js";
+import { getStreamStatus } from "./observatory/stream.js";
+import { getSubSwarmStatus } from "./flight/sub-swarm.js";
+import { getRoutingHistory } from "./routing/model-router.js";
+import { getAlerts, acknowledgeAlert } from "./anomaly/detector.js";
+import { getBaselines } from "./anomaly/baselines.js";
+import { getNectarShares, manualResolve } from "./nectar/share.js";
+import { syncRegistry, searchRegistry as searchRegistryFn, installFromRegistry, rateBlueprint, getBlueprintRatings as getRegistryRatings } from "./registry/client.js";
+import { createChannel, listChannels, deleteChannel } from "./notification/channels.js";
+import { createRoute, listRoutes, deleteRoute } from "./notification/router.js";
+import { createToken, listTokens, revokeToken } from "./webhook/tokens.js";
+import { getAuditLog } from "./webhook/inbound.js";
+import type { BlueprintSpec, GatePolicy, HiveEventType, NotificationChannelType, InboundWebhookPermission } from "./types.js";
 
 // ── Initialize ───────────────────────────────────────────────────────
 
@@ -1451,6 +1463,282 @@ server.tool(
       content: [{ type: "text", text: JSON.stringify(status, null, 2) }],
     };
   },
+);
+
+// ── Phase 16: Intelligence Tools ─────────────────────────────────────
+
+server.tool(
+  "hive_swarm_dag",
+  "Get DAG visualization of a swarm's flight dependency graph, including nodes, edges, critical path, and parallelism ratio",
+  { query: z.string().describe("Swarm number, ID, or UUID") },
+  errorBoundary(async ({ query }) => {
+    const swarm = db.findSwarm(query);
+    if (!swarm) return { content: [{ type: "text" as const, text: `Swarm "${query}" not found` }], isError: true };
+    const result = computeDAG(swarm.id);
+    if (!result.success) return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.dag, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_subswarm_status",
+  "Get status of a sub-swarm launched by a parent flight, including child swarm details and flight progress",
+  { flight_id: z.string().describe("Parent flight UUID") },
+  errorBoundary(async ({ flight_id }) => {
+    const result = getSubSwarmStatus(flight_id);
+    if (!result.success) return { content: [{ type: "text" as const, text: result.error ?? "Unknown error" }], isError: true };
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.data, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_routing_history",
+  "View model routing decisions for a swarm or globally, showing which models were selected and why",
+  {
+    swarm_id: z.string().optional().describe("Filter by swarm ID"),
+    limit: z.number().optional().describe("Max results (default 50)"),
+  },
+  errorBoundary(async ({ swarm_id, limit }) => {
+    const history = getRoutingHistory(swarm_id, limit ?? 50);
+    return { content: [{ type: "text" as const, text: JSON.stringify(history, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_anomaly_alerts",
+  "List anomaly alerts detected by baseline analysis, with optional filters for swarm and acknowledgment status",
+  {
+    swarm_id: z.string().optional().describe("Filter by swarm ID"),
+    acknowledged: z.boolean().optional().describe("Filter by acknowledged status"),
+    limit: z.number().optional().describe("Max results (default 50)"),
+  },
+  errorBoundary(async ({ swarm_id, acknowledged, limit }) => {
+    const alerts = getAlerts({ swarm_id, acknowledged, limit });
+    return { content: [{ type: "text" as const, text: JSON.stringify(alerts, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_anomaly_acknowledge",
+  "Acknowledge an anomaly alert to mark it as reviewed",
+  { alert_id: z.string().describe("Alert UUID to acknowledge") },
+  errorBoundary(async ({ alert_id }) => {
+    const result = acknowledgeAlert(alert_id);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result) }], isError: !result.success };
+  }),
+);
+
+server.tool(
+  "hive_anomaly_baselines",
+  "View computed baselines for a blueprint's flights (mean, stddev, sample count per metric)",
+  { blueprint_id: z.string().describe("Blueprint ID") },
+  errorBoundary(async ({ blueprint_id }) => {
+    const baselines = getBaselines(blueprint_id);
+    return { content: [{ type: "text" as const, text: JSON.stringify(baselines, null, 2) }] };
+  }),
+);
+
+// ── Phase 17: Connectivity Tools ─────────────────────────────────────
+
+server.tool(
+  "hive_stream_status",
+  "Get status of the SSE event stream, including connected client count and their filters",
+  {},
+  errorBoundary(async () => {
+    const status = getStreamStatus();
+    return { content: [{ type: "text" as const, text: JSON.stringify(status, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_nectar_shares",
+  "List cross-swarm nectar shares for a swarm, showing resolved values from other swarms",
+  { swarm_id: z.string().describe("Target swarm ID") },
+  errorBoundary(async ({ swarm_id }) => {
+    const shares = getNectarShares(swarm_id);
+    return { content: [{ type: "text" as const, text: JSON.stringify(shares, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_nectar_resolve",
+  "Manually resolve a nectar value from a source swarm",
+  {
+    source_swarm_id: z.string().describe("Source swarm ID"),
+    from_key: z.string().describe("Key to look up in source swarm nectar"),
+  },
+  errorBoundary(async ({ source_swarm_id, from_key }) => {
+    const result = manualResolve(source_swarm_id, from_key);
+    if (!result.success) return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    return { content: [{ type: "text" as const, text: JSON.stringify({ value: result.value }) }] };
+  }),
+);
+
+server.tool(
+  "hive_registry_search",
+  "Search the blueprint registry for community blueprints. Syncs with remote registry if cache is stale.",
+  {
+    query: z.string().describe("Search query"),
+    registry_url: z.string().optional().describe("Override registry URL"),
+    sync: z.boolean().optional().describe("Force sync before search (default false)"),
+  },
+  errorBoundary(async ({ query, registry_url, sync }) => {
+    if (sync) {
+      const syncResult = await syncRegistry(registry_url);
+      if (!syncResult.success) return { content: [{ type: "text" as const, text: syncResult.error }], isError: true };
+    }
+    const results = searchRegistryFn(query, registry_url);
+    return { content: [{ type: "text" as const, text: JSON.stringify(results, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_registry_install",
+  "Install a blueprint from the registry into the local hive",
+  {
+    blueprint_id: z.string().describe("Blueprint ID to install from registry"),
+    registry_url: z.string().optional().describe("Override registry URL"),
+  },
+  errorBoundary(async ({ blueprint_id, registry_url }) => {
+    const result = await installFromRegistry(blueprint_id, registry_url);
+    if (!result.success) return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    return { content: [{ type: "text" as const, text: JSON.stringify({ installed: result.installed }) }] };
+  }),
+);
+
+server.tool(
+  "hive_blueprint_rate",
+  "Rate a blueprint (1-5 stars) with an optional comment",
+  {
+    blueprint_id: z.string().describe("Blueprint ID to rate"),
+    rating: z.number().int().min(1).max(5).describe("Rating 1-5"),
+    comment: z.string().optional().describe("Optional review comment"),
+  },
+  errorBoundary(async ({ blueprint_id, rating, comment }) => {
+    const result = rateBlueprint(blueprint_id, rating, comment);
+    if (!result.success) return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.rating, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_channel_create",
+  "Create a notification channel for event delivery (webhook, Slack, Discord, or PagerDuty)",
+  {
+    name: z.string().describe("Channel display name"),
+    type: z.enum(["webhook", "slack", "discord", "pagerduty"]).describe("Channel type"),
+    config: z.string().describe("JSON config for channel (e.g. {\"webhook_url\": \"...\", \"channel\": \"#alerts\"})"),
+  },
+  errorBoundary(async ({ name, type, config }) => {
+    const parsed = safeJsonParse(config, null);
+    if (!parsed) return { content: [{ type: "text" as const, text: "Invalid JSON config" }], isError: true };
+    const result = createChannel(name, type as NotificationChannelType, parsed);
+    if (!result.success) return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.channel, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_channel_list",
+  "List all notification channels",
+  {},
+  errorBoundary(async () => {
+    const channels = listChannels();
+    return { content: [{ type: "text" as const, text: JSON.stringify(channels, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_channel_delete",
+  "Delete a notification channel and all its routes",
+  { channel_id: z.string().describe("Channel UUID to delete") },
+  errorBoundary(async ({ channel_id }) => {
+    const result = deleteChannel(channel_id);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result) }], isError: !result.success };
+  }),
+);
+
+server.tool(
+  "hive_route_create",
+  "Create a notification route that maps event patterns (glob) to channels",
+  {
+    event_pattern: z.string().describe("Event glob pattern (e.g. 'swarm.*', 'flight.failed', 'anomaly.*')"),
+    channel_id: z.string().describe("Channel UUID to route to"),
+    priority: z.number().optional().describe("Route priority (higher = first, default 0)"),
+  },
+  errorBoundary(async ({ event_pattern, channel_id, priority }) => {
+    const result = createRoute(event_pattern, channel_id, priority);
+    if (!result.success) return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.route, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_route_list",
+  "List all notification routes",
+  {},
+  errorBoundary(async () => {
+    const routes = listRoutes();
+    return { content: [{ type: "text" as const, text: JSON.stringify(routes, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_route_delete",
+  "Delete a notification route",
+  { route_id: z.string().describe("Route UUID to delete") },
+  errorBoundary(async ({ route_id }) => {
+    const result = deleteRoute(route_id);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result) }], isError: !result.success };
+  }),
+);
+
+server.tool(
+  "hive_webhook_token_create",
+  "Create an inbound webhook authentication token with specific permissions",
+  {
+    name: z.string().describe("Token display name"),
+    permissions: z.array(z.enum(["swarm:start", "gate:approve", "nectar:set", "swarm:stop"])).describe("Permissions to grant"),
+    expires_at: z.string().optional().describe("ISO 8601 expiration timestamp"),
+  },
+  errorBoundary(async ({ name, permissions, expires_at }) => {
+    const result = createToken(name, permissions as InboundWebhookPermission[], expires_at);
+    if (!result.success) return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    return { content: [{ type: "text" as const, text: JSON.stringify({ token: result.token, record: result.record }, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_webhook_token_list",
+  "List all active (non-revoked) inbound webhook tokens",
+  {},
+  errorBoundary(async () => {
+    const tokens = listTokens();
+    return { content: [{ type: "text" as const, text: JSON.stringify(tokens, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_webhook_token_revoke",
+  "Revoke an inbound webhook token",
+  { token_id: z.string().describe("Token UUID to revoke") },
+  errorBoundary(async ({ token_id }) => {
+    const result = revokeToken(token_id);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result) }], isError: !result.success };
+  }),
+);
+
+server.tool(
+  "hive_webhook_audit",
+  "View inbound webhook audit log",
+  {
+    token_id: z.string().optional().describe("Filter by token ID"),
+    limit: z.number().optional().describe("Max results (default 50)"),
+  },
+  errorBoundary(async ({ token_id, limit }) => {
+    const log = getAuditLog({ token_id, limit });
+    return { content: [{ type: "text" as const, text: JSON.stringify(log, null, 2) }] };
+  }),
 );
 
 // ── MCP Resources ────────────────────────────────────────────────────

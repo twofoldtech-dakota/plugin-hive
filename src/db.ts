@@ -27,6 +27,17 @@ import type {
   BlueprintVersionRecord,
   CacheEntry,
   SwarmTemplate,
+  ModelRoutingLogRecord,
+  ModelTier,
+  FlightBaselineRecord,
+  AnomalyAlertRecord,
+  NectarShareRecord,
+  RegistryCacheRecord,
+  BlueprintRatingRecord,
+  NotificationChannelRecord,
+  NotificationRouteRecord,
+  WebhookTokenRecord,
+  WebhookAuditRecord,
 } from "./types.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -490,6 +501,173 @@ function migrate(db: DatabaseSync): void {
     INSERT OR IGNORE INTO hive_config (key, value) VALUES ('cache_enabled', 'false');
     INSERT OR IGNORE INTO hive_config (key, value) VALUES ('cache_ttl_hours', '24');
   `);
+
+  // Phase 16 — new columns on flights
+  const flightCols16 = db.prepare("PRAGMA table_info(flights)").all() as Array<{ name: string }>;
+  if (!flightCols16.some(c => c.name === "sub_swarm_config")) {
+    db.exec("ALTER TABLE flights ADD COLUMN sub_swarm_config TEXT");
+  }
+  if (!flightCols16.some(c => c.name === "child_swarm_id")) {
+    db.exec("ALTER TABLE flights ADD COLUMN child_swarm_id TEXT");
+  }
+  if (!flightCols16.some(c => c.name === "failover_config")) {
+    db.exec("ALTER TABLE flights ADD COLUMN failover_config TEXT");
+  }
+  if (!flightCols16.some(c => c.name === "model_override")) {
+    db.exec("ALTER TABLE flights ADD COLUMN model_override TEXT");
+  }
+  if (!flightCols16.some(c => c.name === "original_bee_id")) {
+    db.exec("ALTER TABLE flights ADD COLUMN original_bee_id TEXT");
+  }
+
+  // Phase 16 — new column on swarms
+  const swarmCols16 = db.prepare("PRAGMA table_info(swarms)").all() as Array<{ name: string }>;
+  if (!swarmCols16.some(c => c.name === "parent_flight_id")) {
+    db.exec("ALTER TABLE swarms ADD COLUMN parent_flight_id TEXT");
+  }
+
+  // Phase 16 — new tables
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS model_routing_log (
+      id TEXT PRIMARY KEY,
+      flight_id TEXT NOT NULL,
+      swarm_id TEXT NOT NULL,
+      bee_id TEXT NOT NULL,
+      selected_tier TEXT NOT NULL,
+      selected_model TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_model_routing_swarm ON model_routing_log(swarm_id);
+
+    CREATE TABLE IF NOT EXISTS flight_baselines (
+      id TEXT PRIMARY KEY,
+      blueprint_id TEXT NOT NULL,
+      flight_id TEXT NOT NULL,
+      metric TEXT NOT NULL,
+      mean REAL NOT NULL DEFAULT 0,
+      stddev REAL NOT NULL DEFAULT 0,
+      sample_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(blueprint_id, flight_id, metric)
+    );
+    CREATE INDEX IF NOT EXISTS idx_flight_baselines_bp ON flight_baselines(blueprint_id);
+
+    CREATE TABLE IF NOT EXISTS anomaly_alerts (
+      id TEXT PRIMARY KEY,
+      swarm_id TEXT NOT NULL,
+      flight_id TEXT NOT NULL,
+      blueprint_id TEXT NOT NULL,
+      metric TEXT NOT NULL,
+      observed_value REAL NOT NULL,
+      expected_mean REAL NOT NULL,
+      expected_stddev REAL NOT NULL,
+      sigma_deviation REAL NOT NULL,
+      severity TEXT NOT NULL DEFAULT 'warning',
+      acknowledged INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_anomaly_alerts_swarm ON anomaly_alerts(swarm_id);
+    CREATE INDEX IF NOT EXISTS idx_anomaly_alerts_ack ON anomaly_alerts(acknowledged);
+  `);
+
+  // Phase 16 — seed config
+  db.exec(`
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('anomaly_detection_enabled', 'false');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('anomaly_sigma_threshold', '2.0');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('anomaly_critical_sigma', '3.0');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('anomaly_min_samples', '10');
+  `);
+
+  // Phase 17 — new tables
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS nectar_shares (
+      id TEXT PRIMARY KEY,
+      target_swarm_id TEXT NOT NULL,
+      target_flight_id TEXT NOT NULL,
+      source_swarm_id TEXT NOT NULL,
+      key TEXT NOT NULL,
+      from_key TEXT NOT NULL,
+      value TEXT,
+      resolved_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_nectar_shares_target ON nectar_shares(target_swarm_id);
+
+    CREATE TABLE IF NOT EXISTS registry_cache (
+      id TEXT PRIMARY KEY,
+      registry_url TEXT NOT NULL,
+      blueprint_id TEXT NOT NULL,
+      name TEXT,
+      description TEXT,
+      version INTEGER,
+      author TEXT,
+      tags TEXT,
+      cached_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(registry_url, blueprint_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS blueprint_ratings (
+      id TEXT PRIMARY KEY,
+      blueprint_id TEXT NOT NULL,
+      rating INTEGER NOT NULL,
+      comment TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_blueprint_ratings_bp ON blueprint_ratings(blueprint_id);
+
+    CREATE TABLE IF NOT EXISTS notification_channels (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      channel_type TEXT NOT NULL,
+      config TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS notification_routes (
+      id TEXT PRIMARY KEY,
+      event_pattern TEXT NOT NULL,
+      channel_id TEXT NOT NULL REFERENCES notification_channels(id),
+      priority INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_notification_routes_channel ON notification_routes(channel_id);
+
+    CREATE TABLE IF NOT EXISTS webhook_tokens (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      permissions TEXT NOT NULL DEFAULT '[]',
+      expires_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      revoked_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS webhook_audit_log (
+      id TEXT PRIMARY KEY,
+      token_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      payload TEXT,
+      ip_address TEXT,
+      status TEXT NOT NULL DEFAULT 'success',
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_webhook_audit_token ON webhook_audit_log(token_id);
+    CREATE INDEX IF NOT EXISTS idx_webhook_audit_created ON webhook_audit_log(created_at);
+  `);
+
+  // Phase 17 — new column on flights
+  if (!flightCols16.some(c => c.name === "nectar_refs")) {
+    db.exec("ALTER TABLE flights ADD COLUMN nectar_refs TEXT");
+  }
+
+  // Phase 17 — seed config
+  db.exec(`
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('registry_url', '');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('registry_cache_hours', '24');
+  `);
 }
 
 // ── Blueprints ───────────────────────────────────────────────────────
@@ -648,7 +826,7 @@ export function insertFlight(
   expects: string,
   status: FlightStatus,
   maxRetries: number,
-  type: "single" | "loop" = "single",
+  type: "single" | "loop" | "sub_swarm" = "single",
   loopConfig?: string,
   dependsOn?: string[],
   whenClause?: string,
@@ -656,6 +834,9 @@ export function insertFlight(
   retryStrategy?: string,
   produces?: string[],
   requires?: string[],
+  subSwarmConfig?: string,
+  failoverConfig?: string,
+  nectarRefs?: string,
 ): FlightRecord {
   const db = getDb();
   const id = randomUUID();
@@ -663,9 +844,9 @@ export function insertFlight(
   const producesJson = produces && produces.length > 0 ? JSON.stringify(produces) : null;
   const requiresJson = requires && requires.length > 0 ? JSON.stringify(requires) : null;
   db.prepare(
-    `INSERT INTO flights (id, swarm_id, flight_id, bee_id, flight_index, input_template, expects, status, max_retries, type, loop_config, depends_on, when_clause, gate, retry_strategy, produces, requires)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, swarmId, flightId, beeId, flightIndex, inputTemplate, expects, status, maxRetries, type, loopConfig ?? null, dependsOnJson, whenClause ?? null, gate ?? null, retryStrategy ?? null, producesJson, requiresJson);
+    `INSERT INTO flights (id, swarm_id, flight_id, bee_id, flight_index, input_template, expects, status, max_retries, type, loop_config, depends_on, when_clause, gate, retry_strategy, produces, requires, sub_swarm_config, failover_config, nectar_refs)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, swarmId, flightId, beeId, flightIndex, inputTemplate, expects, status, maxRetries, type, loopConfig ?? null, dependsOnJson, whenClause ?? null, gate ?? null, retryStrategy ?? null, producesJson, requiresJson, subSwarmConfig ?? null, failoverConfig ?? null, nectarRefs ?? null);
   return getFlight(id)!;
 }
 
@@ -2007,6 +2188,463 @@ export function getBudgetExceededSwarms(): Array<{ id: string; swarm_number: num
      AND COALESCE((SELECT SUM(input_tokens + output_tokens) FROM flight_usage WHERE swarm_id = s.id), 0) > s.token_budget
      AND s.budget_action = 'warn'`,
   ).all() as Array<{ id: string; swarm_number: number; token_budget: number; budget_action: string; consumed: number }>;
+}
+
+// ── Phase 16: Model Routing Log ─────────────────────────────────────
+
+export function insertModelRoutingLog(
+  flightId: string,
+  swarmId: string,
+  beeId: string,
+  selectedTier: ModelTier,
+  selectedModel: string,
+  reason: string,
+): ModelRoutingLogRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO model_routing_log (id, flight_id, swarm_id, bee_id, selected_tier, selected_model, reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  ).run(id, flightId, swarmId, beeId, selectedTier, selectedModel, reason);
+  return row<ModelRoutingLogRecord>(db.prepare("SELECT * FROM model_routing_log WHERE id = ?").get(id));
+}
+
+export function getModelRoutingHistory(swarmId?: string, limit: number = 50): ModelRoutingLogRecord[] {
+  const db = getDb();
+  if (swarmId) {
+    return rows<ModelRoutingLogRecord>(
+      db.prepare("SELECT * FROM model_routing_log WHERE swarm_id = ? ORDER BY created_at DESC LIMIT ?").all(swarmId, limit),
+    );
+  }
+  return rows<ModelRoutingLogRecord>(
+    db.prepare("SELECT * FROM model_routing_log ORDER BY created_at DESC LIMIT ?").all(limit),
+  );
+}
+
+// ── Phase 16: Flight Baselines ──────────────────────────────────────
+
+export function upsertFlightBaseline(
+  blueprintId: string,
+  flightId: string,
+  metric: string,
+  mean: number,
+  stddev: number,
+  sampleCount: number,
+): FlightBaselineRecord {
+  const db = getDb();
+  const existing = db.prepare(
+    "SELECT * FROM flight_baselines WHERE blueprint_id = ? AND flight_id = ? AND metric = ?",
+  ).get(blueprintId, flightId, metric);
+  if (existing) {
+    db.prepare(
+      "UPDATE flight_baselines SET mean = ?, stddev = ?, sample_count = ?, updated_at = datetime('now') WHERE blueprint_id = ? AND flight_id = ? AND metric = ?",
+    ).run(mean, stddev, sampleCount, blueprintId, flightId, metric);
+  } else {
+    const id = randomUUID();
+    db.prepare(
+      "INSERT INTO flight_baselines (id, blueprint_id, flight_id, metric, mean, stddev, sample_count) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).run(id, blueprintId, flightId, metric, mean, stddev, sampleCount);
+  }
+  return row<FlightBaselineRecord>(
+    db.prepare("SELECT * FROM flight_baselines WHERE blueprint_id = ? AND flight_id = ? AND metric = ?").get(blueprintId, flightId, metric),
+  );
+}
+
+export function getFlightBaseline(blueprintId: string, flightId: string, metric: string): FlightBaselineRecord | undefined {
+  const db = getDb();
+  const result = db.prepare(
+    "SELECT * FROM flight_baselines WHERE blueprint_id = ? AND flight_id = ? AND metric = ?",
+  ).get(blueprintId, flightId, metric);
+  return result ? row<FlightBaselineRecord>(result) : undefined;
+}
+
+export function getBaselinesForBlueprint(blueprintId: string): FlightBaselineRecord[] {
+  const db = getDb();
+  return rows<FlightBaselineRecord>(
+    db.prepare("SELECT * FROM flight_baselines WHERE blueprint_id = ? ORDER BY flight_id, metric").all(blueprintId),
+  );
+}
+
+// ── Phase 16: Anomaly Alerts ────────────────────────────────────────
+
+export function insertAnomalyAlert(
+  swarmId: string,
+  flightId: string,
+  blueprintId: string,
+  metric: string,
+  observedValue: number,
+  expectedMean: number,
+  expectedStddev: number,
+  sigmaDeviation: number,
+  severity: "warning" | "critical",
+): AnomalyAlertRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    `INSERT INTO anomaly_alerts (id, swarm_id, flight_id, blueprint_id, metric, observed_value, expected_mean, expected_stddev, sigma_deviation, severity)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, swarmId, flightId, blueprintId, metric, observedValue, expectedMean, expectedStddev, sigmaDeviation, severity);
+  return row<AnomalyAlertRecord>(db.prepare("SELECT * FROM anomaly_alerts WHERE id = ?").get(id));
+}
+
+export function getAnomalyAlerts(filters?: { swarm_id?: string; acknowledged?: boolean; limit?: number }): AnomalyAlertRecord[] {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: SQLInputValue[] = [];
+  if (filters?.swarm_id) {
+    conditions.push("swarm_id = ?");
+    params.push(filters.swarm_id);
+  }
+  if (filters?.acknowledged !== undefined) {
+    conditions.push("acknowledged = ?");
+    params.push(filters.acknowledged ? 1 : 0);
+  }
+  const where = conditions.length > 0 ? "WHERE " + conditions.join(" AND ") : "";
+  const limit = filters?.limit ?? 50;
+  const stmt = db.prepare(`SELECT * FROM anomaly_alerts ${where} ORDER BY created_at DESC LIMIT ?`);
+  return rows<AnomalyAlertRecord>(stmt.all(...params, limit));
+}
+
+export function acknowledgeAnomalyAlert(id: string): boolean {
+  const db = getDb();
+  const result = db.prepare("UPDATE anomaly_alerts SET acknowledged = 1 WHERE id = ?").run(id);
+  return Number(result.changes) > 0;
+}
+
+export function getUnacknowledgedCriticalAlerts(): AnomalyAlertRecord[] {
+  const db = getDb();
+  return rows<AnomalyAlertRecord>(
+    db.prepare("SELECT * FROM anomaly_alerts WHERE severity = 'critical' AND acknowledged = 0 ORDER BY created_at DESC").all(),
+  );
+}
+
+// ── Phase 16: Sub-swarm queries ─────────────────────────────────────
+
+export function setFlightChildSwarm(flightUuid: string, childSwarmId: string): void {
+  const db = getDb();
+  db.prepare("UPDATE flights SET child_swarm_id = ?, status = 'sub_swarm', updated_at = datetime('now') WHERE id = ?").run(childSwarmId, flightUuid);
+}
+
+export function setSwarmParentFlight(swarmId: string, parentFlightId: string): void {
+  const db = getDb();
+  db.prepare("UPDATE swarms SET parent_flight_id = ?, updated_at = datetime('now') WHERE id = ?").run(parentFlightId, swarmId);
+}
+
+export function getSubSwarmFlights(): FlightRecord[] {
+  const db = getDb();
+  return rows<FlightRecord>(
+    db.prepare("SELECT * FROM flights WHERE status = 'sub_swarm'").all(),
+  );
+}
+
+export function getFlightByChildSwarm(childSwarmId: string): FlightRecord | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM flights WHERE child_swarm_id = ?").get(childSwarmId);
+  return result ? row<FlightRecord>(result) : undefined;
+}
+
+// ── Phase 16: Failover queries ──────────────────────────────────────
+
+export function setFlightModelOverride(flightUuid: string, model: string, originalBeeId?: string): void {
+  const db = getDb();
+  const sets = ["model_override = ?", "updated_at = datetime('now')"];
+  const params: SQLInputValue[] = [model];
+  if (originalBeeId) {
+    sets.push("original_bee_id = ?");
+    params.push(originalBeeId);
+  }
+  params.push(flightUuid);
+  db.prepare(`UPDATE flights SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+}
+
+// ── Phase 16: Historical flight data for baselines ──────────────────
+
+export function getCompletedFlightDurations(blueprintId: string, flightId: string, limit: number = 100): number[] {
+  const db = getDb();
+  const results = db.prepare(
+    `SELECT ROUND((julianday(f.completed_at) - julianday(f.started_at)) * 86400) as dur
+     FROM flights f JOIN swarms s ON f.swarm_id = s.id
+     WHERE s.blueprint_id = ? AND f.flight_id = ? AND f.status = 'done'
+       AND f.started_at IS NOT NULL AND f.completed_at IS NOT NULL
+     ORDER BY f.completed_at DESC LIMIT ?`,
+  ).all(blueprintId, flightId, limit) as Array<{ dur: number | null }>;
+  return results.filter(r => r.dur !== null).map(r => r.dur!);
+}
+
+export function getCompletedFlightTokens(blueprintId: string, flightId: string, limit: number = 100): number[] {
+  const db = getDb();
+  const results = db.prepare(
+    `SELECT (u.input_tokens + u.output_tokens) as tokens
+     FROM flight_usage u
+     JOIN flights f ON u.flight_id = f.id
+     JOIN swarms s ON f.swarm_id = s.id
+     WHERE s.blueprint_id = ? AND f.flight_id = ? AND f.status = 'done'
+     ORDER BY u.created_at DESC LIMIT ?`,
+  ).all(blueprintId, flightId, limit) as Array<{ tokens: number }>;
+  return results.map(r => r.tokens);
+}
+
+// ── Phase 17: Nectar Shares ─────────────────────────────────────────
+
+export function insertNectarShare(
+  targetSwarmId: string,
+  targetFlightId: string,
+  sourceSwarmId: string,
+  key: string,
+  fromKey: string,
+): NectarShareRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO nectar_shares (id, target_swarm_id, target_flight_id, source_swarm_id, key, from_key) VALUES (?, ?, ?, ?, ?, ?)",
+  ).run(id, targetSwarmId, targetFlightId, sourceSwarmId, key, fromKey);
+  return row<NectarShareRecord>(db.prepare("SELECT * FROM nectar_shares WHERE id = ?").get(id));
+}
+
+export function getNectarSharesForSwarm(swarmId: string): NectarShareRecord[] {
+  const db = getDb();
+  return rows<NectarShareRecord>(
+    db.prepare("SELECT * FROM nectar_shares WHERE target_swarm_id = ? ORDER BY created_at ASC").all(swarmId),
+  );
+}
+
+export function resolveNectarShare(id: string, value: string): void {
+  const db = getDb();
+  db.prepare("UPDATE nectar_shares SET value = ?, resolved_at = datetime('now') WHERE id = ?").run(value, id);
+}
+
+export function getLatestCompletedSwarmForBlueprint(blueprintId: string): SwarmRecord | undefined {
+  const db = getDb();
+  const result = db.prepare(
+    "SELECT * FROM swarms WHERE blueprint_id = ? AND status = 'completed' ORDER BY updated_at DESC LIMIT 1",
+  ).get(blueprintId);
+  return result ? row<SwarmRecord>(result) : undefined;
+}
+
+// ── Phase 17: Registry Cache ────────────────────────────────────────
+
+export function upsertRegistryCache(
+  registryUrl: string,
+  blueprintId: string,
+  name: string | null,
+  description: string | null,
+  version: number | null,
+  author: string | null,
+  tags: string[] | null,
+): RegistryCacheRecord {
+  const db = getDb();
+  const existing = db.prepare(
+    "SELECT * FROM registry_cache WHERE registry_url = ? AND blueprint_id = ?",
+  ).get(registryUrl, blueprintId);
+  if (existing) {
+    db.prepare(
+      "UPDATE registry_cache SET name = ?, description = ?, version = ?, author = ?, tags = ?, cached_at = datetime('now') WHERE registry_url = ? AND blueprint_id = ?",
+    ).run(name, description, version, author, tags ? JSON.stringify(tags) : null, registryUrl, blueprintId);
+  } else {
+    const id = randomUUID();
+    db.prepare(
+      "INSERT INTO registry_cache (id, registry_url, blueprint_id, name, description, version, author, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(id, registryUrl, blueprintId, name, description, version, author, tags ? JSON.stringify(tags) : null);
+  }
+  return row<RegistryCacheRecord>(
+    db.prepare("SELECT * FROM registry_cache WHERE registry_url = ? AND blueprint_id = ?").get(registryUrl, blueprintId),
+  );
+}
+
+export function searchRegistryCache(query: string, registryUrl?: string): RegistryCacheRecord[] {
+  const db = getDb();
+  const conditions = ["(blueprint_id LIKE ? OR name LIKE ? OR description LIKE ?)"];
+  const params: SQLInputValue[] = [`%${query}%`, `%${query}%`, `%${query}%`];
+  if (registryUrl) {
+    conditions.push("registry_url = ?");
+    params.push(registryUrl);
+  }
+  return rows<RegistryCacheRecord>(
+    db.prepare(`SELECT * FROM registry_cache WHERE ${conditions.join(" AND ")} ORDER BY cached_at DESC LIMIT 50`).all(...params),
+  );
+}
+
+export function getRegistryCacheAge(registryUrl: string): number | null {
+  const db = getDb();
+  const result = db.prepare(
+    "SELECT MIN(cached_at) as oldest FROM registry_cache WHERE registry_url = ?",
+  ).get(registryUrl) as { oldest: string | null } | undefined;
+  if (!result?.oldest) return null;
+  return (Date.now() - new Date(result.oldest.replace(" ", "T") + "Z").getTime()) / (1000 * 60 * 60);
+}
+
+export function clearRegistryCache(registryUrl?: string): number {
+  const db = getDb();
+  if (registryUrl) {
+    return Number(db.prepare("DELETE FROM registry_cache WHERE registry_url = ?").run(registryUrl).changes);
+  }
+  return Number(db.prepare("DELETE FROM registry_cache").run().changes);
+}
+
+// ── Phase 17: Blueprint Ratings ─────────────────────────────────────
+
+export function insertBlueprintRating(blueprintId: string, rating: number, comment?: string): BlueprintRatingRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO blueprint_ratings (id, blueprint_id, rating, comment) VALUES (?, ?, ?, ?)",
+  ).run(id, blueprintId, rating, comment ?? null);
+  return row<BlueprintRatingRecord>(db.prepare("SELECT * FROM blueprint_ratings WHERE id = ?").get(id));
+}
+
+export function getBlueprintRatings(blueprintId: string): { ratings: BlueprintRatingRecord[]; average: number; count: number } {
+  const db = getDb();
+  const ratings = rows<BlueprintRatingRecord>(
+    db.prepare("SELECT * FROM blueprint_ratings WHERE blueprint_id = ? ORDER BY created_at DESC").all(blueprintId),
+  );
+  const avg = db.prepare("SELECT AVG(rating) as avg FROM blueprint_ratings WHERE blueprint_id = ?").get(blueprintId) as { avg: number | null };
+  return { ratings, average: avg?.avg ?? 0, count: ratings.length };
+}
+
+// ── Phase 17: Notification Channels ─────────────────────────────────
+
+export function insertNotificationChannel(
+  name: string,
+  channelType: string,
+  config: string,
+): NotificationChannelRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO notification_channels (id, name, channel_type, config) VALUES (?, ?, ?, ?)",
+  ).run(id, name, channelType, config);
+  return row<NotificationChannelRecord>(db.prepare("SELECT * FROM notification_channels WHERE id = ?").get(id));
+}
+
+export function getNotificationChannel(id: string): NotificationChannelRecord | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM notification_channels WHERE id = ?").get(id);
+  return result ? row<NotificationChannelRecord>(result) : undefined;
+}
+
+export function listNotificationChannels(): NotificationChannelRecord[] {
+  const db = getDb();
+  return rows<NotificationChannelRecord>(
+    db.prepare("SELECT * FROM notification_channels ORDER BY name ASC").all(),
+  );
+}
+
+export function deleteNotificationChannel(id: string): boolean {
+  const db = getDb();
+  db.prepare("DELETE FROM notification_routes WHERE channel_id = ?").run(id);
+  return Number(db.prepare("DELETE FROM notification_channels WHERE id = ?").run(id).changes) > 0;
+}
+
+export function insertNotificationRoute(
+  eventPattern: string,
+  channelId: string,
+  priority: number = 0,
+): NotificationRouteRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO notification_routes (id, event_pattern, channel_id, priority) VALUES (?, ?, ?, ?)",
+  ).run(id, eventPattern, channelId, priority);
+  return row<NotificationRouteRecord>(db.prepare("SELECT * FROM notification_routes WHERE id = ?").get(id));
+}
+
+export function listNotificationRoutes(): NotificationRouteRecord[] {
+  const db = getDb();
+  return rows<NotificationRouteRecord>(
+    db.prepare("SELECT * FROM notification_routes ORDER BY priority DESC, created_at ASC").all(),
+  );
+}
+
+export function deleteNotificationRoute(id: string): boolean {
+  const db = getDb();
+  return Number(db.prepare("DELETE FROM notification_routes WHERE id = ?").run(id).changes) > 0;
+}
+
+export function getRoutesForEvent(eventType: string): Array<{ route: NotificationRouteRecord; channel: NotificationChannelRecord }> {
+  const db = getDb();
+  const routes = listNotificationRoutes();
+  const matched: Array<{ route: NotificationRouteRecord; channel: NotificationChannelRecord }> = [];
+  for (const route of routes) {
+    if (matchGlobPattern(route.event_pattern, eventType)) {
+      const channel = getNotificationChannel(route.channel_id);
+      if (channel && channel.enabled) {
+        matched.push({ route, channel });
+      }
+    }
+  }
+  return matched;
+}
+
+function matchGlobPattern(pattern: string, value: string): boolean {
+  const regex = new RegExp("^" + pattern.replace(/\./g, "\\.").replace(/\*/g, ".*") + "$");
+  return regex.test(value);
+}
+
+// ── Phase 17: Webhook Tokens ────────────────────────────────────────
+
+export function insertWebhookToken(
+  name: string,
+  tokenHash: string,
+  permissions: string[],
+  expiresAt?: string,
+): WebhookTokenRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO webhook_tokens (id, name, token_hash, permissions, expires_at) VALUES (?, ?, ?, ?, ?)",
+  ).run(id, name, tokenHash, JSON.stringify(permissions), expiresAt ?? null);
+  return row<WebhookTokenRecord>(db.prepare("SELECT * FROM webhook_tokens WHERE id = ?").get(id));
+}
+
+export function getWebhookTokenByHash(tokenHash: string): WebhookTokenRecord | undefined {
+  const db = getDb();
+  const result = db.prepare(
+    "SELECT * FROM webhook_tokens WHERE token_hash = ? AND revoked_at IS NULL",
+  ).get(tokenHash);
+  return result ? row<WebhookTokenRecord>(result) : undefined;
+}
+
+export function listWebhookTokens(): WebhookTokenRecord[] {
+  const db = getDb();
+  return rows<WebhookTokenRecord>(
+    db.prepare("SELECT * FROM webhook_tokens WHERE revoked_at IS NULL ORDER BY created_at DESC").all(),
+  );
+}
+
+export function revokeWebhookToken(id: string): boolean {
+  const db = getDb();
+  return Number(db.prepare("UPDATE webhook_tokens SET revoked_at = datetime('now') WHERE id = ? AND revoked_at IS NULL").run(id).changes) > 0;
+}
+
+// ── Phase 17: Webhook Audit Log ─────────────────────────────────────
+
+export function insertWebhookAudit(
+  tokenId: string,
+  action: string,
+  payload?: Record<string, unknown>,
+  ipAddress?: string,
+  status: "success" | "denied" | "error" = "success",
+): WebhookAuditRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO webhook_audit_log (id, token_id, action, payload, ip_address, status) VALUES (?, ?, ?, ?, ?, ?)",
+  ).run(id, tokenId, action, payload ? JSON.stringify(payload) : null, ipAddress ?? null, status);
+  return row<WebhookAuditRecord>(db.prepare("SELECT * FROM webhook_audit_log WHERE id = ?").get(id));
+}
+
+export function getWebhookAuditLog(filters?: { token_id?: string; limit?: number }): WebhookAuditRecord[] {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: SQLInputValue[] = [];
+  if (filters?.token_id) {
+    conditions.push("token_id = ?");
+    params.push(filters.token_id);
+  }
+  const where = conditions.length > 0 ? "WHERE " + conditions.join(" AND ") : "";
+  const limit = filters?.limit ?? 50;
+  return rows<WebhookAuditRecord>(
+    db.prepare(`SELECT * FROM webhook_audit_log ${where} ORDER BY created_at DESC LIMIT ?`).all(...params, limit),
+  );
 }
 
 /** Close the database connection */

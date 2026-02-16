@@ -2276,3 +2276,384 @@ Named reusable swarm configurations for recurring tasks.
 | `src/pipeline/dynamic.test.ts` | Dynamic pipeline tests |
 | `src/swarm/templates.ts` | Swarm template CRUD |
 | `src/swarm/templates.test.ts` | Template tests |
+
+---
+
+## Phase 16: Hive Intelligence — Composition, Smart Routing & Anomaly Detection
+
+5 features, 12 new files, 5 MCP tools, 3 new DB tables, 6 new columns, 4 config keys, 8 event types.
+
+### 16.1 Dependency Visualization (`src/observatory/dag.ts`)
+
+Computes and returns a DAG view of a swarm's flight pipeline showing nodes, edges, critical path, and parallelism ratio.
+
+**DAG Computation (`computeDAG`):**
+- Loads flights for a swarm, builds adjacency from `depends_on`
+- Computes topological levels for layout
+- Identifies critical path via longest-path algorithm using actual or estimated durations
+- Calculates parallelism ratio (max concurrent / total flights)
+- Returns `DAGView` with nodes (id, label, status, level, duration, critical), edges (from/to), criticalPath array, and parallelismRatio
+
+**Types:** `DAGNode`, `DAGEdge`, `DAGView`
+**Tool:** `hive_swarm_dag`
+**API:** `GET /api/swarms/:id/dag`
+
+### 16.2 Flight Retry Failover (`src/flight/failover.ts`)
+
+Flights can define `failover:` array of alternative bee/model configurations. On failure with retries remaining, the failover chain provides an alternative.
+
+**Failover Resolution (`resolveFailover`):**
+- Takes a flight record, reads failover_config JSON array
+- Returns the failover step at index `retry_count` (0-based) or null if exhausted
+
+**Failover Application (`applyFailover`):**
+- Sets `model_override` on the flight for the next retry
+- Preserves `original_bee_id` for tracking
+- If failover step has an alternative `bee_id`, updates the flight's bee assignment
+- Emits `flight.failover` event with step details
+
+**Schema:** `flights.failover_config TEXT`, `flights.model_override TEXT`, `flights.original_bee_id TEXT`
+**Types:** `FailoverStep`
+**Events:** `flight.failover`
+**Integration:** `flight/fail.ts` (resolve failover on retry), `pollinator/spawn.ts` (check model_override), `blueprint/schema.ts` (FailoverStepSchema)
+
+### 16.3 Bee Model Routing (`src/routing/model-router.ts`)
+
+Selects the best model for a flight based on bee configuration, routing rules, and historical performance.
+
+**Model Selection (`selectModel`):**
+- Checks for `model_override` on flight (from failover) — returns immediately if set
+- Evaluates bee's `model_routing` config rules in order
+- Each rule has a condition (task_contains, retry_above, token_budget_remaining_below, flight_index_above) and a target tier
+- Maps tier (fast/balanced/quality) to concrete model name
+- Falls back to default model if no rules match
+- Logs routing decision to `model_routing_log` table
+
+**Schema:** New `model_routing_log` table (id, flight_id, swarm_id, bee_id, selected_tier, selected_model, reason, created_at)
+**Types:** `ModelTier`, `ModelRoutingRule`, `ModelRoutingConfig`, `ModelRoutingLogRecord`
+**Events:** `flight.model_routed`
+**Tool:** `hive_routing_history`
+**Integration:** `pollinator/spawn.ts` (call selectModel in buildSpawnRequest), `blueprint/schema.ts` (ModelRoutingConfigSchema)
+
+### 16.4 Anomaly Detection (`src/anomaly/detector.ts`, `src/anomaly/baselines.ts`)
+
+Statistical anomaly detection for flight performance. Computes baselines from historical data and alerts on sigma deviations.
+
+**Baseline Computation (`baselines.ts`):**
+- `computeBaseline(blueprintId, flightId, metric)` — queries historical data, computes mean/stddev/sample_count
+- `refreshAllBaselines()` — recomputes baselines for all (blueprint, flight, metric) combos with ≥ min_samples
+- Metrics tracked: duration_seconds, total_tokens, failure_rate
+
+**Anomaly Checking (`detector.ts`):**
+- `checkFlightAnomaly(flight, blueprintId, durationSec, tokens)` — checks actual values against baselines
+- Computes sigma deviation: `(actual - mean) / stddev`
+- Severity: "warning" for > anomaly_sigma_threshold (default 2.0), "critical" for > anomaly_critical_sigma (default 3.0)
+- Inserts alerts into `anomaly_alerts` table
+- Emits `anomaly.detected` event for critical alerts
+
+**Alert Management:**
+- `getAnomalyAlerts(filters)` — query with status/severity/blueprint filters
+- `acknowledgeAnomaly(alertId)` — marks alert as acknowledged
+- `getBaselines(blueprintId?)` — returns stored baselines
+
+**Schema:** New `flight_baselines` table (unique on blueprint_id+flight_id+metric), new `anomaly_alerts` table (id, blueprint_id, flight_id, swarm_id, metric, expected_mean, expected_stddev, actual_value, sigma_deviation, severity, status, created_at)
+**Config:** `anomaly_detection_enabled` (false), `anomaly_sigma_threshold` (2.0), `anomaly_critical_sigma` (3.0), `anomaly_min_samples` (10)
+**Events:** `anomaly.detected`, `anomaly.acknowledged`
+**Tools:** `hive_anomaly_alerts`, `hive_anomaly_acknowledge`, `hive_anomaly_baselines`
+**Integration:** `flight/complete.ts` (check after completion), `beekeeper/checks.ts` (surface unacked criticals), `beekeeper/monitor.ts` (periodic baseline refresh)
+
+### 16.5 Blueprint Composition — Sub-swarms (`src/flight/sub-swarm.ts`)
+
+Flights can invoke another blueprint as a child swarm. The parent flight enters `sub_swarm` status while the child executes.
+
+**Sub-swarm Launch (`launchSubSwarm`):**
+- Reads `sub_swarm_config` from flight (blueprint, task_template, variables, nectar_map, timeout_minutes)
+- Resolves task template with `{{nectar_key}}` substitutions from parent swarm's nectar
+- Creates child swarm via `createSwarmFromBlueprint()` with parent linkage
+- Sets parent flight status to `sub_swarm`, stores `child_swarm_id`
+- Sets `parent_flight_id` on child swarm
+- Emits `subswarm.started` event
+
+**Sub-swarm Completion (`handleSubSwarmCompletion`):**
+- Called when all flights in a child swarm complete
+- Maps child swarm's nectar back to parent via `nectar_map` configuration
+- Marks parent flight as `done` with completion output
+- Advances parent pipeline
+- Emits `subswarm.completed` event
+
+**Sub-swarm Failure (`handleSubSwarmFailure`):**
+- Marks parent flight as `failed`
+- Propagates failure to parent swarm
+- Emits `subswarm.failed` event
+
+**Sub-swarm Timeout:**
+- Beekeeper checks for sub_swarm flights exceeding `timeout_minutes`
+- Calls `handleSubSwarmFailure` on timeout
+- Emits `subswarm.timeout` event
+
+**Sub-swarm Status (`getSubSwarmStatus`):**
+- Returns parent flight info, child swarm status, child flight progress, and nectar map config
+
+**Schema:** `flights.sub_swarm_config TEXT`, `flights.child_swarm_id TEXT`, `swarms.parent_flight_id TEXT`
+**Types:** `SubSwarmConfig`, FlightStatus adds `"sub_swarm"`
+**Events:** `subswarm.started`, `subswarm.completed`, `subswarm.failed`, `subswarm.timeout`
+**Tool:** `hive_subswarm_status`
+**Integration:** `pipeline/advance.ts` (launch sub_swarm flights), `flight/complete.ts` (propagate child completion), `beekeeper/checks.ts` (timeout detection), `beekeeper/remediate.ts` (timeoutSubSwarm handler)
+
+### 16.6 Schema Changes
+
+**New Tables (3):**
+- `model_routing_log` (id, flight_id, swarm_id, bee_id, selected_tier, selected_model, reason, created_at)
+- `flight_baselines` (id, blueprint_id, flight_id, metric, mean, stddev, sample_count, updated_at) — unique on (blueprint_id, flight_id, metric)
+- `anomaly_alerts` (id, blueprint_id, flight_id, swarm_id, metric, expected_mean, expected_stddev, actual_value, sigma_deviation, severity, status, created_at)
+
+**New Columns (6):**
+- `flights.sub_swarm_config TEXT` — JSON sub-swarm configuration
+- `flights.child_swarm_id TEXT` — UUID of spawned child swarm
+- `flights.failover_config TEXT` — JSON array of failover steps
+- `flights.model_override TEXT` — model override from failover
+- `flights.original_bee_id TEXT` — original bee before failover
+- `swarms.parent_flight_id TEXT` — links child swarm to parent flight
+
+**New Config Keys (4):**
+- `anomaly_detection_enabled` (boolean, default false)
+- `anomaly_sigma_threshold` (number, default 2.0)
+- `anomaly_critical_sigma` (number, default 3.0)
+- `anomaly_min_samples` (number, default 10)
+
+**New Events (8):**
+- `flight.failover` — failover step applied on retry
+- `flight.model_routed` — model routing decision made
+- `anomaly.detected` — performance anomaly detected
+- `anomaly.acknowledged` — anomaly alert acknowledged
+- `subswarm.started` — child swarm launched
+- `subswarm.completed` — child swarm completed successfully
+- `subswarm.failed` — child swarm failed
+- `subswarm.timeout` — child swarm exceeded timeout
+
+### 16.7 New MCP Tools
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `hive_swarm_dag` | Compute DAG visualization for a swarm | `swarm_id` |
+| `hive_subswarm_status` | Get sub-swarm status for a flight | `flight_id` |
+| `hive_routing_history` | View model routing decisions | `flight_id?, swarm_id?, bee_id?` |
+| `hive_anomaly_alerts` | List anomaly alerts | `status?, severity?, blueprint_id?` |
+| `hive_anomaly_acknowledge` | Acknowledge an anomaly alert | `alert_id` |
+| `hive_anomaly_baselines` | View computed baselines | `blueprint_id?` |
+
+**Total MCP Tools:** 76 (70 from Phase 15 + 6 new)
+
+### 16.8 New Files
+
+| File | Purpose |
+|------|---------|
+| `src/observatory/dag.ts` | DAG computation and visualization |
+| `src/flight/failover.ts` | Flight retry failover chain |
+| `src/routing/model-router.ts` | Bee model routing engine |
+| `src/anomaly/detector.ts` | Anomaly detection and alerting |
+| `src/anomaly/baselines.ts` | Historical baseline computation |
+| `src/flight/sub-swarm.ts` | Sub-swarm lifecycle management |
+
+---
+
+## Phase 17: Connected Hive — Streaming, Collaboration & Ecosystem
+
+5 features, 16 new files, 16 MCP tools, 7 new DB tables, 1 new column, 2 config keys, 9 event types, 8 API endpoints.
+
+### 17.1 Event Streaming — SSE (`src/observatory/stream.ts`)
+
+Server-Sent Events endpoint for real-time event streaming with optional filters.
+
+**SSE Server:**
+- `handleStreamRequest(req, res)` — establishes SSE connection, registers client
+- Supports query filters: `?swarm_id=X` and `?events=type1,type2`
+- In-memory client registry with unique client IDs
+- Heartbeat every 30 seconds to keep connections alive
+- Auto-cleanup on client disconnect
+
+**Broadcasting:**
+- `broadcastEvent(event)` — called from `emitEvent()` in `lib/events.ts`
+- Filters events per client based on swarm_id and event type filters
+- Formats as SSE: `event: <type>\ndata: <json>\n\n`
+
+**Status:**
+- `getStreamStatus()` — returns connected client count and uptime
+- `shutdownStream()` — closes all connections and clears registry
+
+**Tool:** `hive_stream_status`
+**API:** `GET /api/stream` (SSE endpoint), `GET /api/stream/status`
+**Integration:** `lib/events.ts` (broadcasts after DB write)
+
+### 17.2 Cross-swarm Nectar Sharing (`src/nectar/share.ts`)
+
+Flights can import nectar from other swarms using `nectar_refs` declarations.
+
+**Nectar Resolution (`resolveNectarRefs`):**
+- Reads `nectar_refs` from flight configuration
+- Supports three source types:
+  - Direct swarm UUID: `{ source_swarm_id: "uuid", keys: [...] }`
+  - Template variable: `{ source_swarm_id: "{{var_name}}", keys: [...] }` — resolves from current nectar
+  - Latest blueprint: `{ source_swarm_id: "latest:blueprint-id", keys: [...] }` — finds most recent completed swarm
+- Fetches nectar from source swarm and extracts requested keys
+- Records share in `nectar_shares` table
+- Emits `nectar.shared` or `nectar.share_failed` events
+
+**Manual Resolution (`manualResolve`):**
+- Explicitly resolve a nectar ref outside the claim flow
+- Returns resolved key-value pairs
+
+**Schema:** New `nectar_shares` table (id, source_swarm_id, target_swarm_id, flight_id, keys, resolved_at, created_at), `flights.nectar_refs TEXT`
+**Types:** `NectarRef`, `NectarShareRecord`
+**Events:** `nectar.shared`, `nectar.share_failed`
+**Tools:** `hive_nectar_shares`, `hive_nectar_resolve`
+**Integration:** `flight/claim.ts` (resolve refs before building input), `blueprint/schema.ts` (NectarRefSchema)
+
+### 17.3 Blueprint Registry (`src/registry/client.ts`)
+
+Remote JSON index of community blueprints with local caching and ratings.
+
+**Registry Sync (`syncRegistry`):**
+- Fetches JSON index from configured `registry_url`
+- Checks cache freshness against `registry_cache_hours` config
+- Parses `RegistryIndex` with `blueprints[]` array
+- Clears and re-populates local `registry_cache` table
+- Emits `registry.synced` event
+
+**Search (`searchRegistry`):**
+- Queries local cache with text matching against blueprint_id, name, description, and tags
+
+**Install (`installFromRegistry`):**
+- Looks up blueprint in cache, fetches full spec from `{registry_url}/{blueprint_id}.json`
+- Installs via `db.insertBlueprint()` (INSERT OR REPLACE)
+
+**Ratings:**
+- `rateBlueprint(blueprintId, rating, comment?)` — integer 1-5 with optional comment
+- `getBlueprintRatings(blueprintId)` — returns all ratings for a blueprint
+
+**Schema:** New `registry_cache` table (unique on registry_url+blueprint_id), new `blueprint_ratings` table (id, blueprint_id, rating, comment, created_at)
+**Config:** `registry_url` (""), `registry_cache_hours` (24)
+**Events:** `registry.synced`, `blueprint.rated`
+**Tools:** `hive_registry_search`, `hive_registry_install`, `hive_blueprint_rate`
+**API:** `GET /api/registry`, `GET /api/registry/search`, `GET /api/blueprints/:id/ratings`
+
+### 17.4 Notification Channels v2 (`src/notification/channels.ts`, `src/notification/router.ts`)
+
+Multi-channel notifications with type-specific formatters and glob-pattern event routing.
+
+**Channel Management (`channels.ts`):**
+- `createChannel(name, type, config)` — validates config per type:
+  - `webhook`: requires `url`
+  - `slack`: requires `webhook_url` starting with `https://hooks.slack.com/`
+  - `discord`: requires `webhook_url` starting with `https://discord.com/api/webhooks/`
+  - `pagerduty`: requires `routing_key`
+- `listChannels()`, `deleteChannel(channelId)`
+
+**Event Routing (`router.ts`):**
+- `createRoute(channelId, eventPattern, priority?)` — glob pattern matching (e.g., `swarm.*`, `flight.failed`)
+- `routeEventToChannels(event)` — matches event type against routes, delivers to matched channels
+- Type-specific formatters:
+  - Slack: Block Kit format with color-coded attachments (`slack-blocks.ts`)
+  - Discord: Embed format with color coding (`discord-embed.ts`)
+  - PagerDuty: Events API v2 with severity inference (`pagerduty.ts`)
+  - Webhook: standard JSON payload (existing format)
+
+**Schema:** New `notification_channels` table, new `notification_routes` table
+**Types:** `NotificationChannelRecord`, `NotificationRouteRecord`
+**Events:** `channel.created`, `channel.deleted`, `route.created`
+**Tools:** `hive_channel_create`, `hive_channel_list`, `hive_channel_delete`, `hive_route_create`, `hive_route_list`, `hive_route_delete`
+**Integration:** `lib/events.ts` (route events after legacy webhook delivery)
+
+### 17.5 Inbound Webhooks (`src/webhook/inbound.ts`, `src/webhook/tokens.ts`)
+
+Authenticated HTTP endpoints for external systems to interact with the hive.
+
+**Token Management (`tokens.ts`):**
+- `generateToken()` — creates `hive_` prefixed 32-byte hex tokens
+- `hashToken(token)` — SHA-256 hash for storage (raw tokens never stored)
+- `createToken(name, permissions, expiresAt?)` — returns the raw token once
+- `validateToken(token)` — checks hash match, expiry, and returns permissions
+- `listTokens()` — returns token metadata (no hashes)
+- `revokeToken(tokenId)` — soft-deletes by setting revoked_at
+
+**Inbound Endpoints (`inbound.ts`):**
+- `POST /api/webhook/swarm/start` — start a new swarm (permission: `swarm:start`)
+- `POST /api/webhook/gate/approve` — approve a gated flight (permission: `gate:approve`)
+- `POST /api/webhook/nectar/set` — set nectar on a swarm (permission: `nectar:set`)
+- `POST /api/webhook/swarm/stop` — stop a running swarm (permission: `swarm:stop`)
+- Bearer token authentication via `Authorization` header
+- All actions logged to `webhook_audit_log` table
+
+**Schema:** New `webhook_tokens` table (id, name, token_hash, permissions, created_at, expires_at, revoked_at), new `webhook_audit_log` table (id, token_id, action, payload, ip_address, result, created_at)
+**Types:** `WebhookTokenRecord`, `WebhookAuditRecord`, `InboundWebhookPermission`
+**Events:** `webhook.inbound`, `webhook.token_created`, `webhook.token_revoked`
+**Tools:** `hive_webhook_token_create`, `hive_webhook_token_list`, `hive_webhook_token_revoke`, `hive_webhook_audit`
+**API:** `POST /api/webhook/swarm/start`, `POST /api/webhook/gate/approve`, `POST /api/webhook/nectar/set`, `POST /api/webhook/swarm/stop`, `GET /api/webhook/audit`
+
+### 17.6 Schema Changes
+
+**New Tables (7):**
+- `nectar_shares` (id, source_swarm_id, target_swarm_id, flight_id, keys, resolved_at, created_at)
+- `registry_cache` (id, registry_url, blueprint_id, name, description, version, author, tags, synced_at) — unique on (registry_url, blueprint_id)
+- `blueprint_ratings` (id, blueprint_id, rating, comment, created_at)
+- `notification_channels` (id, name, type, config, enabled, created_at, updated_at)
+- `notification_routes` (id, channel_id, event_pattern, priority, created_at)
+- `webhook_tokens` (id, name, token_hash, permissions, created_at, expires_at, revoked_at)
+- `webhook_audit_log` (id, token_id, action, payload, ip_address, result, created_at)
+
+**New Columns (1):**
+- `flights.nectar_refs TEXT` — JSON array of nectar reference declarations
+
+**New Config Keys (2):**
+- `registry_url` (string, default "") — URL of the blueprint registry
+- `registry_cache_hours` (number, default 24) — cache freshness threshold
+
+**New Events (9):**
+- `nectar.shared` — nectar successfully shared between swarms
+- `nectar.share_failed` — nectar sharing failed
+- `registry.synced` — registry cache refreshed
+- `blueprint.rated` — blueprint rating submitted
+- `channel.created` — notification channel created
+- `channel.deleted` — notification channel removed
+- `route.created` — notification route created
+- `webhook.inbound` — inbound webhook request processed
+- `webhook.token_created` — webhook token generated
+- `webhook.token_revoked` — webhook token revoked
+
+### 17.7 New MCP Tools
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `hive_stream_status` | Get SSE stream connection status | — |
+| `hive_nectar_shares` | List nectar shares for a swarm | `swarm_id` |
+| `hive_nectar_resolve` | Manually resolve a nectar reference | `swarm_id, source, keys` |
+| `hive_registry_search` | Search blueprint registry | `query, registry_url?` |
+| `hive_registry_install` | Install blueprint from registry | `blueprint_id, registry_url?` |
+| `hive_blueprint_rate` | Rate an installed blueprint | `blueprint_id, rating, comment?` |
+| `hive_channel_create` | Create a notification channel | `name, type, config` |
+| `hive_channel_list` | List notification channels | — |
+| `hive_channel_delete` | Delete a notification channel | `channel_id` |
+| `hive_route_create` | Create a notification route | `channel_id, event_pattern, priority?` |
+| `hive_route_list` | List notification routes | — |
+| `hive_route_delete` | Delete a notification route | `route_id` |
+| `hive_webhook_token_create` | Create an inbound webhook token | `name, permissions, expires_at?` |
+| `hive_webhook_token_list` | List webhook tokens | — |
+| `hive_webhook_token_revoke` | Revoke a webhook token | `token_id` |
+| `hive_webhook_audit` | View webhook audit log | `limit?` |
+
+**Total MCP Tools:** 92 (76 from Phase 16 + 16 new)
+
+### 17.8 New Files
+
+| File | Purpose |
+|------|---------|
+| `src/observatory/stream.ts` | SSE event streaming server |
+| `src/nectar/share.ts` | Cross-swarm nectar sharing |
+| `src/registry/client.ts` | Blueprint registry client |
+| `src/notification/channels.ts` | Multi-channel notification management |
+| `src/notification/router.ts` | Event-to-channel routing engine |
+| `src/notification/formatters/slack-blocks.ts` | Slack Block Kit formatter |
+| `src/notification/formatters/discord-embed.ts` | Discord embed formatter |
+| `src/notification/formatters/pagerduty.ts` | PagerDuty Events API v2 formatter |
+| `src/webhook/tokens.ts` | Webhook token management |
+| `src/webhook/inbound.ts` | Inbound webhook HTTP handler |

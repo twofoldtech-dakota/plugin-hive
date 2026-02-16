@@ -1,7 +1,7 @@
 ---
 name: hive
 description: "Manage Plugin Hive swarms, blueprints, and bees"
-allowed-tools: Read, Grep, Glob, mcp__hive__hive_blueprint_list, mcp__hive__hive_blueprint_install, mcp__hive__hive_blueprint_uninstall, mcp__hive__hive_blueprint_info, mcp__hive__hive_blueprint_scaffold, mcp__hive__hive_blueprint_validate, mcp__hive__hive_blueprint_dryrun, mcp__hive__hive_blueprint_install_remote, mcp__hive__hive_blueprint_export, mcp__hive__hive_blueprint_import, mcp__hive__hive_blueprint_history, mcp__hive__hive_blueprint_diff, mcp__hive__hive_swarm_start, mcp__hive__hive_swarm_status, mcp__hive__hive_swarm_list, mcp__hive__hive_swarm_stop, mcp__hive__hive_swarm_resume, mcp__hive__hive_swarm_replay, mcp__hive__hive_swarm_analytics, mcp__hive__hive_swarm_usage, mcp__hive__hive_swarm_archive, mcp__hive__hive_swarm_report, mcp__hive__hive_swarm_estimate, mcp__hive__hive_swarm_compare, mcp__hive__hive_flight_peek, mcp__hive__hive_flight_claim, mcp__hive__hive_flight_complete, mcp__hive__hive_flight_fail, mcp__hive__hive_flight_trace, mcp__hive__hive_flight_pulse, mcp__hive__hive_flight_progress, mcp__hive__hive_flight_inject, mcp__hive__hive_flight_skip, mcp__hive__hive_gate_approve, mcp__hive__hive_gate_list, mcp__hive__hive_pollinate, mcp__hive__hive_cell_list, mcp__hive__hive_beekeeper_check, mcp__hive__hive_beekeeper_status, mcp__hive__hive_bee_stats, mcp__hive__hive_snapshot_create, mcp__hive__hive_snapshot_list, mcp__hive__hive_snapshot_restore, mcp__hive__hive_checkpoint_create, mcp__hive__hive_chain_status, mcp__hive__hive_chain_list, mcp__hive__hive_notification_config, mcp__hive__hive_notification_test, mcp__hive__hive_notification_history, mcp__hive__hive_notification_retry, mcp__hive__hive_observatory_start, mcp__hive__hive_observatory_stop, mcp__hive__hive_observatory_status, mcp__hive__hive_queue_status, mcp__hive__hive_storage_status, mcp__hive__hive_config, mcp__hive__hive_fleet_metrics, mcp__hive__hive_maintain, mcp__hive__hive_adaptive_tune, mcp__hive__hive_nectar_set, mcp__hive__hive_nectar_get, mcp__hive__hive_budget_set, mcp__hive__hive_budget_status, mcp__hive__hive_cache_status, mcp__hive__hive_cache_clear, mcp__hive__hive_template_save, mcp__hive__hive_template_list, mcp__hive__hive_template_run
+allowed-tools: Read, Grep, Glob, mcp__hive__hive_blueprint_list, mcp__hive__hive_blueprint_install, mcp__hive__hive_blueprint_uninstall, mcp__hive__hive_blueprint_info, mcp__hive__hive_blueprint_scaffold, mcp__hive__hive_blueprint_validate, mcp__hive__hive_blueprint_dryrun, mcp__hive__hive_blueprint_install_remote, mcp__hive__hive_blueprint_export, mcp__hive__hive_blueprint_import, mcp__hive__hive_blueprint_history, mcp__hive__hive_blueprint_diff, mcp__hive__hive_swarm_start, mcp__hive__hive_swarm_status, mcp__hive__hive_swarm_list, mcp__hive__hive_swarm_stop, mcp__hive__hive_swarm_resume, mcp__hive__hive_swarm_replay, mcp__hive__hive_swarm_analytics, mcp__hive__hive_swarm_usage, mcp__hive__hive_swarm_archive, mcp__hive__hive_swarm_report, mcp__hive__hive_swarm_estimate, mcp__hive__hive_swarm_compare, mcp__hive__hive_swarm_dag, mcp__hive__hive_flight_peek, mcp__hive__hive_flight_claim, mcp__hive__hive_flight_complete, mcp__hive__hive_flight_fail, mcp__hive__hive_flight_trace, mcp__hive__hive_flight_pulse, mcp__hive__hive_flight_progress, mcp__hive__hive_flight_inject, mcp__hive__hive_flight_skip, mcp__hive__hive_gate_approve, mcp__hive__hive_gate_list, mcp__hive__hive_pollinate, mcp__hive__hive_cell_list, mcp__hive__hive_beekeeper_check, mcp__hive__hive_beekeeper_status, mcp__hive__hive_bee_stats, mcp__hive__hive_snapshot_create, mcp__hive__hive_snapshot_list, mcp__hive__hive_snapshot_restore, mcp__hive__hive_checkpoint_create, mcp__hive__hive_chain_status, mcp__hive__hive_chain_list, mcp__hive__hive_notification_config, mcp__hive__hive_notification_test, mcp__hive__hive_notification_history, mcp__hive__hive_notification_retry, mcp__hive__hive_observatory_start, mcp__hive__hive_observatory_stop, mcp__hive__hive_observatory_status, mcp__hive__hive_queue_status, mcp__hive__hive_storage_status, mcp__hive__hive_config, mcp__hive__hive_fleet_metrics, mcp__hive__hive_maintain, mcp__hive__hive_adaptive_tune, mcp__hive__hive_nectar_set, mcp__hive__hive_nectar_get, mcp__hive__hive_budget_set, mcp__hive__hive_budget_status, mcp__hive__hive_cache_status, mcp__hive__hive_cache_clear, mcp__hive__hive_template_save, mcp__hive__hive_template_list, mcp__hive__hive_template_run, mcp__hive__hive_subswarm_status, mcp__hive__hive_routing_history, mcp__hive__hive_anomaly_alerts, mcp__hive__hive_anomaly_acknowledge, mcp__hive__hive_anomaly_baselines, mcp__hive__hive_stream_status, mcp__hive__hive_nectar_shares, mcp__hive__hive_nectar_resolve, mcp__hive__hive_registry_search, mcp__hive__hive_registry_install, mcp__hive__hive_blueprint_rate, mcp__hive__hive_channel_create, mcp__hive__hive_channel_list, mcp__hive__hive_channel_delete, mcp__hive__hive_route_create, mcp__hive__hive_route_list, mcp__hive__hive_route_delete, mcp__hive__hive_webhook_token_create, mcp__hive__hive_webhook_token_list, mcp__hive__hive_webhook_token_revoke, mcp__hive__hive_webhook_audit
 ---
 
 # /hive — Plugin Hive Management
@@ -74,6 +74,28 @@ Parse the first word of `$ARGUMENTS` as the sub-command. If no arguments are giv
 | `template save <name> <blueprint_id>` | Save a swarm template (see **template save**) |
 | `template list` | List saved templates (see **template list**) |
 | `template run <name> <task>` | Start a swarm from a template (see **template run**) |
+| `dag <number\|id>` | Show DAG visualization (see **dag**) |
+| `subswarm <flight_id>` | Check sub-swarm status (see **subswarm**) |
+| `routing [flight_id\|swarm_id\|bee_id]` | View model routing history (see **routing**) |
+| `anomalies [--severity=X] [--status=X]` | List anomaly alerts (see **anomalies**) |
+| `anomaly ack <alert_id>` | Acknowledge an anomaly (see **anomaly ack**) |
+| `baselines [blueprint_id]` | View performance baselines (see **baselines**) |
+| `stream status` | Check SSE stream status (see **stream status**) |
+| `nectar shares <number\|id>` | List nectar shares (see **nectar shares**) |
+| `nectar resolve <number\|id> <source> <keys>` | Resolve a nectar ref (see **nectar resolve**) |
+| `registry search <query>` | Search blueprint registry (see **registry search**) |
+| `registry install <id>` | Install from registry (see **registry install**) |
+| `rate <blueprint_id> <1-5> [comment]` | Rate a blueprint (see **rate**) |
+| `channel create <name> <type> <config>` | Create notification channel (see **channel create**) |
+| `channel list` | List notification channels (see **channel list**) |
+| `channel delete <id>` | Delete notification channel (see **channel delete**) |
+| `route create <channel_id> <pattern>` | Create notification route (see **route create**) |
+| `route list` | List notification routes (see **route list**) |
+| `route delete <id>` | Delete notification route (see **route delete**) |
+| `webhook token create <name> <perms>` | Create webhook token (see **webhook token create**) |
+| `webhook token list` | List webhook tokens (see **webhook token list**) |
+| `webhook token revoke <id>` | Revoke webhook token (see **webhook token revoke**) |
+| `webhook audit [--limit=N]` | View webhook audit log (see **webhook audit**) |
 
 ---
 
@@ -398,7 +420,7 @@ Get or set global configuration.
 1. If no arguments, call `mcp__hive__hive_config` with no params to show all config entries with descriptions.
 2. If a key is given but no value, call `mcp__hive__hive_config` with just the key to show that entry.
 3. If both key and value are given, call `mcp__hive__hive_config` with key and value to update it.
-4. Valid keys: `max_concurrent_swarms`, `max_flights_per_bee`, `retention_days`, `auto_archive`, `default_priority`, `event_retention_days`, `trace_retention_days`, `check_retention_days`, `webhook_retention_days`, `auto_maintain`, `adaptive_enabled`, `default_token_budget`, `default_budget_action`, `cache_enabled`, `cache_ttl_hours`.
+4. Valid keys: `max_concurrent_swarms`, `max_flights_per_bee`, `retention_days`, `auto_archive`, `default_priority`, `event_retention_days`, `trace_retention_days`, `check_retention_days`, `webhook_retention_days`, `auto_maintain`, `adaptive_enabled`, `default_token_budget`, `default_budget_action`, `cache_enabled`, `cache_ttl_hours`, `anomaly_detection_enabled`, `anomaly_sigma_threshold`, `anomaly_critical_sigma`, `anomaly_min_samples`, `registry_url`, `registry_cache_hours`.
 
 ### replay
 
@@ -585,6 +607,195 @@ Start a swarm from a saved template.
 5. Report the new swarm number and template used.
 6. Immediately call `mcp__hive__hive_pollinate` with the returned swarm_id to kick off work.
 7. Suggest: "Use `/hive-drive` to run this swarm autonomously."
+
+### dag
+
+Show DAG visualization for a swarm.
+
+1. The argument can be a swarm number or ID.
+2. **Number resolution:** If the argument is a short number, call `mcp__hive__hive_swarm_status` with it first to resolve the full swarm ID.
+3. Call `mcp__hive__hive_swarm_dag` with the resolved swarm ID.
+4. Display: nodes with status/level, edges, critical path, and parallelism ratio.
+
+### subswarm
+
+Check sub-swarm status for a flight.
+
+1. The argument is the flight UUID.
+2. Call `mcp__hive__hive_subswarm_status` with the flight_id.
+3. Display: parent flight info, child swarm status, child flight progress, and nectar map.
+
+### routing
+
+View model routing decisions.
+
+1. If a flight_id is given, call `mcp__hive__hive_routing_history` with flight_id.
+2. If a swarm number/ID is given, resolve it then call with swarm_id.
+3. If a bee_id is given, call with bee_id.
+4. If no argument, call with no params to show recent routing history.
+5. Format as a table: `flight_id | bee_id | tier | model | reason | timestamp`.
+
+### anomalies
+
+List anomaly alerts.
+
+1. Parse `--severity=X` (warning, critical) and `--status=X` (open, acknowledged) from args.
+2. Call `mcp__hive__hive_anomaly_alerts` with optional filters.
+3. Format as a table: `alert_id | blueprint | flight | metric | sigma | severity | status`.
+
+### anomaly ack
+
+Acknowledge an anomaly alert.
+
+1. The argument is the alert ID.
+2. Call `mcp__hive__hive_anomaly_acknowledge` with the alert_id.
+3. Confirm acknowledgment.
+
+### baselines
+
+View computed performance baselines.
+
+1. If a blueprint_id is given, call `mcp__hive__hive_anomaly_baselines` with it.
+2. If no argument, call with no params to show all baselines.
+3. Format as a table: `blueprint | flight | metric | mean | stddev | samples`.
+
+### stream status
+
+Check SSE event stream status.
+
+1. Call `mcp__hive__hive_stream_status`.
+2. Report: connected clients and uptime.
+
+### nectar shares
+
+List nectar shares for a swarm.
+
+1. The argument can be a swarm number or ID.
+2. **Number resolution:** If the argument is a short number, call `mcp__hive__hive_swarm_status` with it first to resolve the full swarm ID.
+3. Call `mcp__hive__hive_nectar_shares` with the resolved swarm ID.
+4. Format as a table: `source_swarm | keys | resolved_at`.
+
+### nectar resolve
+
+Manually resolve a nectar reference.
+
+1. The first argument is the swarm number or ID.
+2. **Number resolution:** Resolve short numbers as usual.
+3. The second argument is the source (swarm UUID, `latest:blueprint-id`, or `{{var}}`).
+4. The third argument is a comma-separated list of keys.
+5. Call `mcp__hive__hive_nectar_resolve` with swarm_id, source, and keys array.
+6. Display the resolved key-value pairs.
+
+### registry search
+
+Search the blueprint registry.
+
+1. The argument is the search query.
+2. Parse optional `--url=X` for a specific registry URL.
+3. Call `mcp__hive__hive_registry_search` with query and optional registry_url.
+4. Format as a table: `blueprint_id | name | description | version | author`.
+
+### registry install
+
+Install a blueprint from the registry.
+
+1. The argument is the blueprint ID.
+2. Parse optional `--url=X` for a specific registry URL.
+3. Call `mcp__hive__hive_registry_install` with blueprint_id and optional registry_url.
+4. Report success and the installed blueprint ID.
+
+### rate
+
+Rate an installed blueprint.
+
+1. The first argument is the blueprint ID.
+2. The second argument is the rating (1-5).
+3. Optional remaining text is the comment.
+4. Call `mcp__hive__hive_blueprint_rate` with blueprint_id, rating, and optional comment.
+5. Confirm the rating was recorded.
+
+### channel create
+
+Create a notification channel.
+
+1. The first argument is the channel name.
+2. The second argument is the type (webhook, slack, discord, pagerduty).
+3. Remaining arguments are the config as JSON or key=value pairs.
+4. Call `mcp__hive__hive_channel_create` with name, type, and config object.
+5. Report the created channel ID.
+
+### channel list
+
+List notification channels.
+
+1. Call `mcp__hive__hive_channel_list`.
+2. Format as a table: `id | name | type | enabled | created_at`.
+
+### channel delete
+
+Delete a notification channel.
+
+1. The argument is the channel ID.
+2. Call `mcp__hive__hive_channel_delete` with channel_id.
+3. Confirm deletion.
+
+### route create
+
+Create a notification route.
+
+1. The first argument is the channel ID.
+2. The second argument is the event pattern (glob, e.g. `swarm.*`, `flight.failed`).
+3. Parse optional `--priority=N`.
+4. Call `mcp__hive__hive_route_create` with channel_id, event_pattern, and optional priority.
+5. Report the created route ID.
+
+### route list
+
+List notification routes.
+
+1. Call `mcp__hive__hive_route_list`.
+2. Format as a table: `id | channel | event_pattern | priority`.
+
+### route delete
+
+Delete a notification route.
+
+1. The argument is the route ID.
+2. Call `mcp__hive__hive_route_delete` with route_id.
+3. Confirm deletion.
+
+### webhook token create
+
+Create an inbound webhook token.
+
+1. The first argument is the token name.
+2. The second argument is a comma-separated list of permissions (swarm:start, gate:approve, nectar:set, swarm:stop).
+3. Parse optional `--expires=ISO8601` for expiry date.
+4. Call `mcp__hive__hive_webhook_token_create` with name, permissions array, and optional expires_at.
+5. **IMPORTANT:** Display the raw token to the user and warn that it cannot be shown again.
+
+### webhook token list
+
+List webhook tokens.
+
+1. Call `mcp__hive__hive_webhook_token_list`.
+2. Format as a table: `id | name | permissions | created_at | expires_at | revoked`.
+
+### webhook token revoke
+
+Revoke a webhook token.
+
+1. The argument is the token ID.
+2. Call `mcp__hive__hive_webhook_token_revoke` with token_id.
+3. Confirm revocation.
+
+### webhook audit
+
+View inbound webhook audit log.
+
+1. Parse optional `--limit=N` (default 20).
+2. Call `mcp__hive__hive_webhook_audit` with limit.
+3. Format as a table: `id | token_id | action | result | ip_address | timestamp`.
 
 ---
 

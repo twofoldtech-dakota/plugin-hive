@@ -12,6 +12,8 @@ import { trackUsage } from "../usage/track.js";
 import { updateBeeStats } from "../usage/bee-stats.js";
 import { checkProducedKeys } from "../nectar/contracts.js";
 import { checkBudget } from "../budget/budget.js";
+import { checkFlightAnomaly } from "../anomaly/detector.js";
+import { handleSubSwarmCompletion } from "./sub-swarm.js";
 import type { LoopConfig, BlueprintSpec, FlightRecord } from "../types.js";
 
 export type CompleteFlightResult =
@@ -90,6 +92,19 @@ export function completeFlight(flightId: string, output: string): CompleteFlight
   emitEvent({ eventType: "flight.completed", swarmId: flight.swarm_id, payload: { flight_id: flight.flight_id } });
   maybeAutoCheckpoint(flight.swarm_id);
   checkBudget(flight.swarm_id);
+
+  // Anomaly detection: check duration and tokens against baselines
+  checkFlightAnomaly(flight, swarm.blueprint_id, durationSec, tokens);
+
+  // Check if parent swarm should be notified of sub-swarm completion
+  if (swarm.parent_flight_id) {
+    const allFlights = db.getFlightsForSwarm(swarm.id);
+    const allRegularDone = allFlights.filter(f => !f.verify_meta).every(f => f.status === "done");
+    if (allRegularDone) {
+      handleSubSwarmCompletion(swarm);
+    }
+  }
+
   const advResult = advancePipeline(flight.swarm_id);
   if (advResult.action === "completed") {
     // Scheduler unregistration handled by caller / index.ts

@@ -16,6 +16,17 @@ const ChamberConfigSchema = z.object({
   files: z.record(z.string(), z.string()),
 });
 
+const ModelRoutingRuleSchema = z.object({
+  condition: z.string().min(1),
+  tier: z.enum(["fast", "balanced", "quality"]),
+});
+
+const ModelRoutingConfigSchema = z.object({
+  default_tier: z.enum(["fast", "balanced", "quality"]),
+  tiers: z.record(z.string(), z.string()),
+  rules: z.array(ModelRoutingRuleSchema).optional(),
+});
+
 const BeeSpecSchema = z.object({
   id: z.string().regex(ID_PATTERN, "Bee ID must be lowercase alphanumeric with hyphens"),
   name: z.string().optional(),
@@ -25,6 +36,7 @@ const BeeSpecSchema = z.object({
   polling_model: z.string().optional(),
   timeout_seconds: z.number().positive().optional(),
   chamber: ChamberConfigSchema,
+  model_routing: ModelRoutingConfigSchema.optional(),
 });
 
 const LoopConfigSchema = z.object({
@@ -39,11 +51,35 @@ const RetryStrategySchema = z.object({
   delay_seconds: z.number().positive().optional(),
 });
 
+const SubSwarmConfigSchema = z.object({
+  blueprint: z.string().min(1),
+  task_template: z.string().min(1),
+  variables: z.record(z.string(), z.string()).optional(),
+  nectar_map: z.record(z.string(), z.string()).optional(),
+  timeout_minutes: z.number().positive().optional(),
+});
+
+const FailoverStepSchema = z.object({
+  bee: z.string().optional(),
+  model: z.string().optional(),
+  max_retries: z.number().int().min(0).optional(),
+});
+
+const NectarRefSchema = z.object({
+  key: z.string().min(1),
+  from_swarm: z.string().min(1),
+  from_key: z.string().min(1),
+  required: z.boolean().optional(),
+});
+
 const FlightSpecSchema = z.object({
   id: z.string().regex(ID_PATTERN, "Flight ID must be lowercase alphanumeric with hyphens"),
   bee: z.string().min(1),
-  type: z.enum(["single", "loop"]).default("single"),
+  type: z.enum(["single", "loop", "sub_swarm"]).default("single"),
   loop: LoopConfigSchema.optional(),
+  sub_swarm: SubSwarmConfigSchema.optional(),
+  failover: z.array(FailoverStepSchema).optional(),
+  nectar_refs: z.array(NectarRefSchema).optional(),
   depends_on: z.array(z.string().min(1)).optional(),
   when: z.string().optional(),
   gate: z.union([

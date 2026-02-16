@@ -1,3 +1,5 @@
+import * as db from "../db.js";
+import { selectModel } from "../routing/model-router.js";
 import type {
   BeeRole,
   BeeSpec,
@@ -146,7 +148,14 @@ export function buildSpawnRequest(
 ): SpawnRequest {
   const toolConfig = getToolsForRole(beeSpec.role);
   const prompt = buildBeePrompt(beeSpec, claimResult, blueprintSpec.id);
-  const model = beeSpec.model ?? blueprintSpec.polling?.model ?? "sonnet";
+  const defaultModel = blueprintSpec.polling?.model ?? "sonnet";
+
+  // Use model routing if available, respecting failover overrides
+  const flight = db.getFlight(claimResult.flight_id);
+  const routing = flight
+    ? selectModel(beeSpec, flight, claimResult.swarm_id, defaultModel)
+    : { model: beeSpec.model ?? defaultModel, tier: "balanced" as const, reason: "default" };
+  const model = routing.model;
 
   const maxTurns = beeSpec.timeout_seconds
     ? Math.max(Math.floor(beeSpec.timeout_seconds / 10), 10)

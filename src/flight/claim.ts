@@ -3,6 +3,7 @@ import { resolveNectar } from "./template.js";
 import { emitEvent } from "../lib/events.js";
 import { nowUtc } from "../lib/time.js";
 import { insertTrace } from "../trace/record.js";
+import { resolveNectarRefs } from "../nectar/share.js";
 import type { FlightClaimResult } from "../types.js";
 
 export type ClaimFlightResult =
@@ -43,6 +44,16 @@ export function claimFlight(beeId: string): ClaimFlightResult {
       const remaining = allCells.filter(c => c.status === "pending" || c.status === "in_progress");
       nectar.completed_cells = completed.map(c => c.title).join(", ") || "none";
       nectar.cells_remaining = String(remaining.length);
+    }
+  }
+
+  // Resolve cross-swarm nectar refs if present
+  if (flight.nectar_refs) {
+    const refResult = resolveNectarRefs(flight.swarm_id, flight.id, flight.flight_id, flight.nectar_refs, nectar);
+    if (refResult.success) {
+      Object.assign(nectar, refResult.resolved);
+      // Persist resolved refs into swarm nectar
+      db.updateSwarm(flight.swarm_id, { nectar: JSON.stringify(nectar) });
     }
   }
 
