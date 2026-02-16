@@ -7,6 +7,7 @@ import { nowUtc } from "../lib/time.js";
 import { archiveSwarm as doArchiveSwarm } from "../archive/archive.js";
 import { runMaintenance } from "../maintenance/janitor.js";
 import { handleSubSwarmFailure } from "../flight/sub-swarm.js";
+import { evaluateDueSchedules } from "../scheduler/evaluate.js";
 import type { RemediationResult } from "../types.js";
 
 /**
@@ -237,4 +238,18 @@ export function failExhaustedFlight(flightId: string): RemediationResult {
   emitEvent({ eventType: "swarm.failed", swarmId: flight.swarm_id, payload: { reason: "flight_exhausted" } });
   logger.info("Beekeeper: failed exhausted flight", { flightId, abandonCount: flight.abandoned_count });
   return { action: "failExhaustedFlight", entity_id: flightId, success: true, detail: `Failed flight and swarm (abandoned ${flight.abandoned_count} times)` };
+}
+
+/**
+ * Evaluate due schedules and trigger swarms.
+ */
+export function evaluateSchedules(_entityId: string): RemediationResult {
+  const result = evaluateDueSchedules();
+  logger.info("Beekeeper: evaluated schedules", { triggered: result.triggered, skipped: result.skipped });
+  return {
+    action: "evaluateSchedules",
+    entity_id: "schedules",
+    success: true,
+    detail: `Evaluated ${result.evaluated} schedule(s): ${result.triggered} triggered, ${result.skipped} skipped${result.errors.length > 0 ? `, ${result.errors.length} error(s)` : ""}`,
+  };
 }

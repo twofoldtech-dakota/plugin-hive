@@ -97,6 +97,7 @@ const FlightSpecSchema = z.object({
   input: z.string().min(1),
   expects: z.string().min(1),
   max_retries: z.number().int().min(0).default(2),
+  on_exhausted: z.enum(["fail", "dlq"]).optional(),
 });
 
 const ConcurrencyConfigSchema = z.object({

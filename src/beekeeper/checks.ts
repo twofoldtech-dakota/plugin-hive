@@ -2,6 +2,7 @@ import * as db from "../db.js";
 import { scheduler } from "../pollinator/scheduler.js";
 import { getConfigBoolean, getConfigNumber } from "../config/global.js";
 import { nowUtc } from "../lib/time.js";
+import { transitionExpiredCircuits } from "../resilience/circuit-breaker.js";
 import type { CheckResult } from "../types.js";
 import type { ResolvedThresholds } from "./config.js";
 
@@ -412,4 +413,85 @@ export function checkAutoArchive(): CheckResult[] {
     entity_id: s.id,
     remediation: "autoArchiveSwarm",
   }));
+}
+
+// ── Phase 18: Schedule, Circuit Breaker, DLQ Checks ──────────────────
+
+/**
+ * Check for due schedules that need evaluation.
+ */
+export function checkDueSchedules(): CheckResult[] {
+  const enabled = getConfigBoolean("schedule_evaluation_enabled", true);
+  if (!enabled) return [];
+
+  const due = db.getDueSchedules();
+  if (due.length === 0) return [];
+
+  return [{
+    issue: `${due.length} schedule(s) due for evaluation`,
+    severity: "warning" as const,
+    entity_type: "scheduler" as const,
+    entity_id: "schedules",
+    remediation: "evaluateSchedules",
+  }];
+}
+
+/**
+ * Check for open circuit breakers and transition expired ones.
+ */
+export function checkOpenCircuits(): CheckResult[] {
+  const enabled = getConfigBoolean("circuit_breaker_enabled", false);
+  if (!enabled) return [];
+
+  // Transition expired open → half_open
+  const transitioned = transitionExpiredCircuits();
+
+  const openCircuits = db.getOpenCircuits();
+  const results: CheckResult[] = [];
+
+  for (const c of openCircuits) {
+    if (c.state === "open") {
+      results.push({
+        issue: `Circuit breaker OPEN for bee "${c.bee_id}" (${c.failure_count} failures)`,
+        severity: "critical" as const,
+        entity_type: "flight" as const,
+        entity_id: c.bee_id,
+        // Advisory only — circuit will auto-transition via timeout
+      });
+    } else if (c.state === "half_open") {
+      results.push({
+        issue: `Circuit breaker HALF-OPEN for bee "${c.bee_id}" (testing probe)`,
+        severity: "warning" as const,
+        entity_type: "flight" as const,
+        entity_id: c.bee_id,
+      });
+    }
+  }
+
+  if (transitioned > 0) {
+    results.push({
+      issue: `${transitioned} circuit(s) transitioned from open to half-open`,
+      severity: "warning" as const,
+      entity_type: "flight" as const,
+      entity_id: "circuits",
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Check for pending dead letters.
+ */
+export function checkDeadLetters(): CheckResult[] {
+  const count = db.getPendingDeadLetterCount();
+  if (count === 0) return [];
+
+  return [{
+    issue: `${count} pending dead letter(s) require attention`,
+    severity: count >= 5 ? "critical" as const : "warning" as const,
+    entity_type: "flight" as const,
+    entity_id: "dlq",
+    // Advisory only — dead letters require manual replay/purge
+  }];
 }

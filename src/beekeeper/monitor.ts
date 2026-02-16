@@ -24,6 +24,9 @@ import {
   checkExpiredCache,
   checkSubSwarmTimeouts,
   checkCriticalAnomalies,
+  checkDueSchedules,
+  checkOpenCircuits,
+  checkDeadLetters,
 } from "./checks.js";
 import {
   resetStuckFlight,
@@ -39,10 +42,13 @@ import {
   resolveExpiredGate,
   cleanExpiredCache,
   timeoutSubSwarm,
+  evaluateSchedules,
 } from "./remediate.js";
 import { emitEvent } from "../lib/events.js";
 import { refreshAllBaselines } from "../anomaly/baselines.js";
 import { handleSubSwarmFailure } from "../flight/sub-swarm.js";
+import { computeHealthScore } from "../observatory/health.js";
+import { getConfigBoolean as getConfigBooleanHealth } from "../config/global.js";
 import type { CheckResult, BeekeeperReport, BlueprintSpec } from "../types.js";
 
 function promoteScheduledSwarm(swarmId: string): { success: boolean } {
@@ -78,6 +84,7 @@ const remediationMap: Record<string, (entityId: string) => { success: boolean }>
   resolveExpiredGate,
   cleanExpiredCache,
   timeoutSubSwarm,
+  evaluateSchedules,
 };
 
 /**
@@ -103,6 +110,9 @@ export function runBeekeeperCheck(): BeekeeperReport {
     ...checkExpiredCache(),
     ...checkSubSwarmTimeouts(),
     ...checkCriticalAnomalies(),
+    ...checkDueSchedules(),
+    ...checkOpenCircuits(),
+    ...checkDeadLetters(),
   ];
 
   // Periodic baseline refresh for anomaly detection
@@ -141,6 +151,12 @@ export function runBeekeeperCheck(): BeekeeperReport {
       : `Found ${allResults.length} issue(s), took ${actionsTaken} action(s).`;
 
   db.insertBeekeeperCheck(allResults.length, actionsTaken, summary, { findings });
+
+  // Health score snapshot
+  if (getConfigBooleanHealth("health_snapshot_enabled", true)) {
+    try { computeHealthScore(); } catch { /* health scoring is best-effort */ }
+  }
+
   logger.info("Beekeeper check completed", { issuesFound: allResults.length, actionsTaken });
 
   return {

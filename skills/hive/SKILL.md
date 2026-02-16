@@ -1,7 +1,7 @@
 ---
 name: hive
 description: "Manage Plugin Hive swarms, blueprints, and bees"
-allowed-tools: Read, Grep, Glob, mcp__hive__hive_blueprint_list, mcp__hive__hive_blueprint_install, mcp__hive__hive_blueprint_uninstall, mcp__hive__hive_blueprint_info, mcp__hive__hive_blueprint_scaffold, mcp__hive__hive_blueprint_validate, mcp__hive__hive_blueprint_dryrun, mcp__hive__hive_blueprint_install_remote, mcp__hive__hive_blueprint_export, mcp__hive__hive_blueprint_import, mcp__hive__hive_blueprint_history, mcp__hive__hive_blueprint_diff, mcp__hive__hive_swarm_start, mcp__hive__hive_swarm_status, mcp__hive__hive_swarm_list, mcp__hive__hive_swarm_stop, mcp__hive__hive_swarm_resume, mcp__hive__hive_swarm_replay, mcp__hive__hive_swarm_analytics, mcp__hive__hive_swarm_usage, mcp__hive__hive_swarm_archive, mcp__hive__hive_swarm_report, mcp__hive__hive_swarm_estimate, mcp__hive__hive_swarm_compare, mcp__hive__hive_swarm_dag, mcp__hive__hive_flight_peek, mcp__hive__hive_flight_claim, mcp__hive__hive_flight_complete, mcp__hive__hive_flight_fail, mcp__hive__hive_flight_trace, mcp__hive__hive_flight_pulse, mcp__hive__hive_flight_progress, mcp__hive__hive_flight_inject, mcp__hive__hive_flight_skip, mcp__hive__hive_gate_approve, mcp__hive__hive_gate_list, mcp__hive__hive_pollinate, mcp__hive__hive_cell_list, mcp__hive__hive_beekeeper_check, mcp__hive__hive_beekeeper_status, mcp__hive__hive_bee_stats, mcp__hive__hive_snapshot_create, mcp__hive__hive_snapshot_list, mcp__hive__hive_snapshot_restore, mcp__hive__hive_checkpoint_create, mcp__hive__hive_chain_status, mcp__hive__hive_chain_list, mcp__hive__hive_notification_config, mcp__hive__hive_notification_test, mcp__hive__hive_notification_history, mcp__hive__hive_notification_retry, mcp__hive__hive_observatory_start, mcp__hive__hive_observatory_stop, mcp__hive__hive_observatory_status, mcp__hive__hive_queue_status, mcp__hive__hive_storage_status, mcp__hive__hive_config, mcp__hive__hive_fleet_metrics, mcp__hive__hive_maintain, mcp__hive__hive_adaptive_tune, mcp__hive__hive_nectar_set, mcp__hive__hive_nectar_get, mcp__hive__hive_budget_set, mcp__hive__hive_budget_status, mcp__hive__hive_cache_status, mcp__hive__hive_cache_clear, mcp__hive__hive_template_save, mcp__hive__hive_template_list, mcp__hive__hive_template_run, mcp__hive__hive_subswarm_status, mcp__hive__hive_routing_history, mcp__hive__hive_anomaly_alerts, mcp__hive__hive_anomaly_acknowledge, mcp__hive__hive_anomaly_baselines, mcp__hive__hive_stream_status, mcp__hive__hive_nectar_shares, mcp__hive__hive_nectar_resolve, mcp__hive__hive_registry_search, mcp__hive__hive_registry_install, mcp__hive__hive_blueprint_rate, mcp__hive__hive_channel_create, mcp__hive__hive_channel_list, mcp__hive__hive_channel_delete, mcp__hive__hive_route_create, mcp__hive__hive_route_list, mcp__hive__hive_route_delete, mcp__hive__hive_webhook_token_create, mcp__hive__hive_webhook_token_list, mcp__hive__hive_webhook_token_revoke, mcp__hive__hive_webhook_audit
+allowed-tools: Read, Grep, Glob, mcp__hive__hive_blueprint_list, mcp__hive__hive_blueprint_install, mcp__hive__hive_blueprint_uninstall, mcp__hive__hive_blueprint_info, mcp__hive__hive_blueprint_scaffold, mcp__hive__hive_blueprint_validate, mcp__hive__hive_blueprint_dryrun, mcp__hive__hive_blueprint_install_remote, mcp__hive__hive_blueprint_export, mcp__hive__hive_blueprint_import, mcp__hive__hive_blueprint_history, mcp__hive__hive_blueprint_diff, mcp__hive__hive_swarm_start, mcp__hive__hive_swarm_status, mcp__hive__hive_swarm_list, mcp__hive__hive_swarm_stop, mcp__hive__hive_swarm_resume, mcp__hive__hive_swarm_replay, mcp__hive__hive_swarm_analytics, mcp__hive__hive_swarm_usage, mcp__hive__hive_swarm_archive, mcp__hive__hive_swarm_report, mcp__hive__hive_swarm_estimate, mcp__hive__hive_swarm_compare, mcp__hive__hive_swarm_dag, mcp__hive__hive_flight_peek, mcp__hive__hive_flight_claim, mcp__hive__hive_flight_complete, mcp__hive__hive_flight_fail, mcp__hive__hive_flight_trace, mcp__hive__hive_flight_pulse, mcp__hive__hive_flight_progress, mcp__hive__hive_flight_inject, mcp__hive__hive_flight_skip, mcp__hive__hive_gate_approve, mcp__hive__hive_gate_list, mcp__hive__hive_pollinate, mcp__hive__hive_cell_list, mcp__hive__hive_beekeeper_check, mcp__hive__hive_beekeeper_status, mcp__hive__hive_bee_stats, mcp__hive__hive_snapshot_create, mcp__hive__hive_snapshot_list, mcp__hive__hive_snapshot_restore, mcp__hive__hive_checkpoint_create, mcp__hive__hive_chain_status, mcp__hive__hive_chain_list, mcp__hive__hive_notification_config, mcp__hive__hive_notification_test, mcp__hive__hive_notification_history, mcp__hive__hive_notification_retry, mcp__hive__hive_observatory_start, mcp__hive__hive_observatory_stop, mcp__hive__hive_observatory_status, mcp__hive__hive_queue_status, mcp__hive__hive_storage_status, mcp__hive__hive_config, mcp__hive__hive_fleet_metrics, mcp__hive__hive_maintain, mcp__hive__hive_adaptive_tune, mcp__hive__hive_nectar_set, mcp__hive__hive_nectar_get, mcp__hive__hive_budget_set, mcp__hive__hive_budget_status, mcp__hive__hive_cache_status, mcp__hive__hive_cache_clear, mcp__hive__hive_template_save, mcp__hive__hive_template_list, mcp__hive__hive_template_run, mcp__hive__hive_subswarm_status, mcp__hive__hive_routing_history, mcp__hive__hive_anomaly_alerts, mcp__hive__hive_anomaly_acknowledge, mcp__hive__hive_anomaly_baselines, mcp__hive__hive_stream_status, mcp__hive__hive_nectar_shares, mcp__hive__hive_nectar_resolve, mcp__hive__hive_registry_search, mcp__hive__hive_registry_install, mcp__hive__hive_blueprint_rate, mcp__hive__hive_channel_create, mcp__hive__hive_channel_list, mcp__hive__hive_channel_delete, mcp__hive__hive_route_create, mcp__hive__hive_route_list, mcp__hive__hive_route_delete, mcp__hive__hive_webhook_token_create, mcp__hive__hive_webhook_token_list, mcp__hive__hive_webhook_token_revoke, mcp__hive__hive_webhook_audit, mcp__hive__hive_schedule_create, mcp__hive__hive_schedule_list, mcp__hive__hive_schedule_delete, mcp__hive__hive_schedule_toggle, mcp__hive__hive_schedule_history, mcp__hive__hive_schedule_evaluate, mcp__hive__hive_circuit_list, mcp__hive__hive_circuit_reset, mcp__hive__hive_dlq_list, mcp__hive__hive_dlq_replay, mcp__hive__hive_dlq_purge, mcp__hive__hive_blueprint_test_add, mcp__hive__hive_blueprint_test_list, mcp__hive__hive_blueprint_test_run, mcp__hive__hive_blueprint_test_delete, mcp__hive__hive_health, mcp__hive__hive_health_history
 ---
 
 # /hive — Plugin Hive Management
@@ -96,6 +96,23 @@ Parse the first word of `$ARGUMENTS` as the sub-command. If no arguments are giv
 | `webhook token list` | List webhook tokens (see **webhook token list**) |
 | `webhook token revoke <id>` | Revoke webhook token (see **webhook token revoke**) |
 | `webhook audit [--limit=N]` | View webhook audit log (see **webhook audit**) |
+| `schedule create <name> <bp> <cron> <task>` | Create a recurring schedule (see **schedule create**) |
+| `schedule list [--blueprint=X]` | List schedules (see **schedule list**) |
+| `schedule delete <id>` | Delete a schedule (see **schedule delete**) |
+| `schedule toggle <id>` | Enable/disable a schedule (see **schedule toggle**) |
+| `schedule history <id>` | View schedule run history (see **schedule history**) |
+| `schedule evaluate` | Manually evaluate due schedules (see **schedule evaluate**) |
+| `circuits [--state=X]` | List circuit breaker states (see **circuits**) |
+| `circuit reset <bee_id>` | Reset a circuit breaker (see **circuit reset**) |
+| `dlq [swarm_id]` | List dead-lettered flights (see **dlq list**) |
+| `dlq replay <id>` | Replay a dead-lettered flight (see **dlq replay**) |
+| `dlq purge [id\|--swarm=N]` | Purge dead letters (see **dlq purge**) |
+| `test add <bp> <name>` | Add a blueprint test case (see **test add**) |
+| `test list <bp>` | List blueprint test cases (see **test list**) |
+| `test run <bp\|test_id>` | Run blueprint test(s) (see **test run**) |
+| `test delete <test_id>` | Delete a test case (see **test delete**) |
+| `health` | Show hive health score (see **health**) |
+| `health history` | Show health score history (see **health history**) |
 
 ---
 
@@ -796,6 +813,141 @@ View inbound webhook audit log.
 1. Parse optional `--limit=N` (default 20).
 2. Call `mcp__hive__hive_webhook_audit` with limit.
 3. Format as a table: `id | token_id | action | result | ip_address | timestamp`.
+
+### schedule create
+
+Create a recurring cron-based schedule.
+
+1. Parse arguments: `<name> <blueprint_id> <cron_expression> <task_template>`. Optional: `--overlap=skip|queue|cancel_previous`, `--priority=N`, `--vars='{"key":"val"}'`.
+2. Call `mcp__hive__hive_schedule_create` with name, blueprint_id, cron, task_template, and optional params.
+3. Show the created schedule details.
+
+### schedule list
+
+List recurring schedules.
+
+1. Parse optional `--blueprint=X` and `--enabled` flags.
+2. Call `mcp__hive__hive_schedule_list` with filters.
+3. Format as a table: `id | name | blueprint | cron | enabled | next_run_at | run_count`.
+
+### schedule delete
+
+Delete a schedule.
+
+1. The argument is the schedule ID.
+2. Call `mcp__hive__hive_schedule_delete` with schedule_id.
+3. Confirm deletion.
+
+### schedule toggle
+
+Enable or disable a schedule.
+
+1. The argument is the schedule ID. Parse optional `--enable` or `--disable` flag (default: toggle).
+2. Call `mcp__hive__hive_schedule_toggle` with schedule_id and enabled.
+3. Show the updated schedule.
+
+### schedule history
+
+View run history for a schedule.
+
+1. The argument is the schedule ID. Parse optional `--limit=N`.
+2. Call `mcp__hive__hive_schedule_history` with schedule_id and limit.
+3. Format runs as a table: `id | swarm_id | triggered_at | status`.
+
+### schedule evaluate
+
+Manually evaluate all due schedules.
+
+1. Call `mcp__hive__hive_schedule_evaluate`.
+2. Show the result: evaluated, triggered, skipped, errors.
+
+### circuits
+
+List circuit breaker states.
+
+1. Parse optional `--state=open|closed|half_open`.
+2. Call `mcp__hive__hive_circuit_list` with state.
+3. Format as a table: `bee_id | state | failure_count | success_count | opened_at`.
+
+### circuit reset
+
+Reset a circuit breaker to closed.
+
+1. The argument is the qualified bee ID.
+2. Call `mcp__hive__hive_circuit_reset` with bee_id.
+3. Confirm the reset.
+
+### dlq list
+
+List dead-lettered flights.
+
+1. Parse optional swarm_id argument and `--status=pending|replayed|purged`.
+2. Call `mcp__hive__hive_dlq_list` with filters.
+3. Format as a table: `id | flight_id | swarm_id | bee_id | last_error | status | created_at`.
+
+### dlq replay
+
+Replay a dead-lettered flight.
+
+1. The argument is the dead letter ID.
+2. Call `mcp__hive__hive_dlq_replay` with dead_letter_id.
+3. Show the result.
+
+### dlq purge
+
+Purge dead letters.
+
+1. If argument is a specific ID, call with dead_letter_id. If `--swarm=N`, resolve swarm ID and call with swarm_id.
+2. Call `mcp__hive__hive_dlq_purge` with the appropriate parameter.
+3. Show the purged count.
+
+### test add
+
+Add a blueprint test case.
+
+1. Parse `<blueprint_id> <name>`. The user must provide mock_inputs (JSON), mock_outputs (JSON), and assertions (JSON) — prompt if missing.
+2. Call `mcp__hive__hive_blueprint_test_add` with all parameters.
+3. Show the created test case.
+
+### test list
+
+List blueprint test cases.
+
+1. The argument is the blueprint ID.
+2. Call `mcp__hive__hive_blueprint_test_list` with blueprint_id.
+3. Format as a table: `id | name | description | assertion_count`.
+
+### test run
+
+Run blueprint tests.
+
+1. If the argument looks like a test case ID, call `mcp__hive__hive_blueprint_test_run` with test_case_id. Otherwise call with blueprint_id to run the full suite.
+2. Show pass/fail results for each assertion.
+3. Show the summary: total, passed, failed.
+
+### test delete
+
+Delete a blueprint test case.
+
+1. The argument is the test case ID.
+2. Call `mcp__hive__hive_blueprint_test_delete` with test_case_id.
+3. Confirm deletion.
+
+### health
+
+Show the hive health score.
+
+1. Call `mcp__hive__hive_health`.
+2. Display the composite score prominently, then show each factor as a table: `factor | score | weight | detail`.
+3. Show the trend (improving/declining/stable).
+
+### health history
+
+Show health score history.
+
+1. Parse optional `--limit=N` (default 20).
+2. Call `mcp__hive__hive_health_history` with limit.
+3. Format as a table: `composite_score | trend | computed_at`.
 
 ---
 

@@ -70,7 +70,14 @@ import { createChannel, listChannels, deleteChannel } from "./notification/chann
 import { createRoute, listRoutes, deleteRoute } from "./notification/router.js";
 import { createToken, listTokens, revokeToken } from "./webhook/tokens.js";
 import { getAuditLog } from "./webhook/inbound.js";
-import type { BlueprintSpec, GatePolicy, HiveEventType, NotificationChannelType, InboundWebhookPermission } from "./types.js";
+import { createSchedule, listSchedulesQuery, deleteScheduleById, toggleSchedule, getScheduleHistoryQuery } from "./scheduler/manager.js";
+import { evaluateDueSchedules } from "./scheduler/evaluate.js";
+import { listCircuits, resetCircuit } from "./resilience/circuit-breaker.js";
+import { listDeadLettersQuery, replayDeadLetter, purgeDeadLetters } from "./resilience/dlq.js";
+import { addTestCase, listTestCasesQuery, deleteTestCaseById } from "./blueprint/testing/manager.js";
+import { runBlueprintTest, runBlueprintTestSuite } from "./blueprint/testing/runner.js";
+import { computeHealthScore, getHealthHistoryQuery } from "./observatory/health.js";
+import type { BlueprintSpec, GatePolicy, HiveEventType, NotificationChannelType, InboundWebhookPermission, CircuitState } from "./types.js";
 
 // ── Initialize ───────────────────────────────────────────────────────
 
@@ -1738,6 +1745,233 @@ server.tool(
   errorBoundary(async ({ token_id, limit }) => {
     const log = getAuditLog({ token_id, limit });
     return { content: [{ type: "text" as const, text: JSON.stringify(log, null, 2) }] };
+  }),
+);
+
+// ── Phase 18: Scheduled Swarms ────────────────────────────────────────
+
+server.tool(
+  "hive_schedule_create",
+  "Create a recurring cron-based schedule that triggers swarms from a blueprint",
+  {
+    name: z.string().describe("Unique schedule name"),
+    blueprint_id: z.string().describe("Blueprint ID to trigger"),
+    cron: z.string().describe("5-field cron expression (min hour dom month dow)"),
+    task_template: z.string().describe("Task description template"),
+    variables: z.record(z.string(), z.string()).optional().describe("Variable overrides"),
+    overlap_behavior: z.enum(["skip", "queue", "cancel_previous"]).optional().describe("What to do if previous run is still active"),
+    priority: z.number().optional().describe("Swarm priority (default 5)"),
+  },
+  errorBoundary(async ({ name, blueprint_id, cron, task_template, variables, overlap_behavior, priority }) => {
+    const result = createSchedule({ name, blueprint_id, cron_expression: cron, task_template, variables, overlap_behavior, priority });
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_schedule_list",
+  "List all recurring schedules with optional filters",
+  {
+    blueprint_id: z.string().optional().describe("Filter by blueprint ID"),
+    enabled: z.boolean().optional().describe("Filter by enabled/disabled"),
+  },
+  errorBoundary(async ({ blueprint_id, enabled }) => {
+    const schedules = listSchedulesQuery({ blueprint_id, enabled });
+    return { content: [{ type: "text" as const, text: JSON.stringify(schedules, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_schedule_delete",
+  "Delete a recurring schedule and its history",
+  { schedule_id: z.string().describe("Schedule ID to delete") },
+  errorBoundary(async ({ schedule_id }) => {
+    const result = deleteScheduleById(schedule_id);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+  }),
+);
+
+server.tool(
+  "hive_schedule_toggle",
+  "Enable or disable a recurring schedule",
+  {
+    schedule_id: z.string().describe("Schedule ID"),
+    enabled: z.boolean().describe("Whether to enable (true) or disable (false)"),
+  },
+  errorBoundary(async ({ schedule_id, enabled }) => {
+    const result = toggleSchedule(schedule_id, enabled);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_schedule_history",
+  "View run history for a recurring schedule",
+  {
+    schedule_id: z.string().describe("Schedule ID"),
+    limit: z.number().optional().describe("Max results (default 20)"),
+  },
+  errorBoundary(async ({ schedule_id, limit }) => {
+    const result = getScheduleHistoryQuery(schedule_id, limit);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_schedule_evaluate",
+  "Manually evaluate all due schedules and trigger swarms",
+  {},
+  errorBoundary(async () => {
+    const result = evaluateDueSchedules();
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  }),
+);
+
+// ── Phase 18: Circuit Breakers ────────────────────────────────────────
+
+server.tool(
+  "hive_circuit_list",
+  "List circuit breaker states for all bees",
+  { state: z.enum(["closed", "open", "half_open"]).optional().describe("Filter by circuit state") },
+  errorBoundary(async ({ state }) => {
+    const circuits = listCircuits(state as CircuitState | undefined);
+    return { content: [{ type: "text" as const, text: JSON.stringify(circuits, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_circuit_reset",
+  "Manually reset a circuit breaker to closed state",
+  { bee_id: z.string().describe("Qualified bee ID (blueprint_id/bee_id)") },
+  errorBoundary(async ({ bee_id }) => {
+    const result = resetCircuit(bee_id);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+  }),
+);
+
+// ── Phase 18: Dead Letter Queue ───────────────────────────────────────
+
+server.tool(
+  "hive_dlq_list",
+  "List dead-lettered flights with optional filters",
+  {
+    swarm_id: z.string().optional().describe("Filter by swarm ID"),
+    status: z.string().optional().describe("Filter by DL status (pending, replayed, purged)"),
+  },
+  errorBoundary(async ({ swarm_id, status }) => {
+    const dls = listDeadLettersQuery({ swarm_id, status });
+    return { content: [{ type: "text" as const, text: JSON.stringify(dls, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_dlq_replay",
+  "Replay a dead-lettered flight by resetting it to pending",
+  { dead_letter_id: z.string().describe("Dead letter ID to replay") },
+  errorBoundary(async ({ dead_letter_id }) => {
+    const result = replayDeadLetter(dead_letter_id);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+  }),
+);
+
+server.tool(
+  "hive_dlq_purge",
+  "Purge dead letters by ID or by swarm",
+  {
+    dead_letter_id: z.string().optional().describe("Specific dead letter to purge"),
+    swarm_id: z.string().optional().describe("Purge all pending dead letters for this swarm"),
+  },
+  errorBoundary(async ({ dead_letter_id, swarm_id }) => {
+    const result = purgeDeadLetters({ dead_letter_id, swarm_id });
+    return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+  }),
+);
+
+// ── Phase 18: Blueprint Testing ───────────────────────────────────────
+
+server.tool(
+  "hive_blueprint_test_add",
+  "Add a test case for a blueprint with mock inputs, outputs, and assertions",
+  {
+    blueprint_id: z.string().describe("Blueprint ID"),
+    name: z.string().describe("Test case name"),
+    mock_inputs: z.string().describe("JSON object of initial nectar inputs"),
+    mock_outputs: z.string().describe("JSON object of flight_id → mock output text"),
+    assertions: z.string().describe("JSON array of assertions [{type, target, expected?}]"),
+    description: z.string().optional().describe("Optional description"),
+  },
+  errorBoundary(async ({ blueprint_id, name, mock_inputs, mock_outputs, assertions, description }) => {
+    const result = addTestCase({
+      blueprint_id,
+      name,
+      description,
+      mock_inputs: JSON.parse(mock_inputs),
+      mock_outputs: JSON.parse(mock_outputs),
+      assertions: JSON.parse(assertions),
+    });
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_blueprint_test_list",
+  "List all test cases for a blueprint",
+  { blueprint_id: z.string().describe("Blueprint ID") },
+  errorBoundary(async ({ blueprint_id }) => {
+    const testCases = listTestCasesQuery(blueprint_id);
+    return { content: [{ type: "text" as const, text: JSON.stringify(testCases, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_blueprint_test_run",
+  "Run blueprint test(s) — either a single test case or all tests for a blueprint",
+  {
+    test_case_id: z.string().optional().describe("Run a specific test case"),
+    blueprint_id: z.string().optional().describe("Run all tests for a blueprint"),
+  },
+  errorBoundary(async ({ test_case_id, blueprint_id }) => {
+    if (test_case_id) {
+      const result = runBlueprintTest(test_case_id);
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    }
+    if (blueprint_id) {
+      const result = runBlueprintTestSuite(blueprint_id);
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify({ error: "Provide test_case_id or blueprint_id" }) }] };
+  }),
+);
+
+server.tool(
+  "hive_blueprint_test_delete",
+  "Delete a blueprint test case",
+  { test_case_id: z.string().describe("Test case ID to delete") },
+  errorBoundary(async ({ test_case_id }) => {
+    const result = deleteTestCaseById(test_case_id);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+  }),
+);
+
+// ── Phase 18: Hive Health Score ───────────────────────────────────────
+
+server.tool(
+  "hive_health",
+  "Compute and return the composite hive health score (0-100) with factor breakdown",
+  {},
+  errorBoundary(async () => {
+    const result = computeHealthScore();
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_health_history",
+  "View historical health score snapshots",
+  { limit: z.number().optional().describe("Max snapshots to return (default 20)") },
+  errorBoundary(async ({ limit }) => {
+    const result = getHealthHistoryQuery(limit);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
   }),
 );
 

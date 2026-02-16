@@ -20,8 +20,8 @@ export function advancePipeline(swarmId: string): AdvanceResult {
   const flights = db.getFlightsForSwarm(swarmId);
   const regularFlights = flights.filter(f => !f.verify_meta);
 
-  // Check if all flights are done (exclude verification flights from blocking)
-  const allDone = regularFlights.every(f => f.status === "done");
+  // Check if all flights are done or dead-lettered (exclude verification flights from blocking)
+  const allDone = regularFlights.every(f => f.status === "done" || f.status === "dead_letter");
   if (allDone) {
     db.updateSwarm(swarmId, { status: "completed" });
     db.bumpEpoch();
@@ -50,7 +50,7 @@ export function advancePipeline(swarmId: string): AdvanceResult {
     return { action: "completed" };
   }
 
-  // Check for failures
+  // Check for failures (dead_letter flights don't block — handled separately)
   const anyFailed = regularFlights.some(f => f.status === "failed");
   if (anyFailed) {
     return { action: "none" }; // Already handled in flight_fail
@@ -186,9 +186,11 @@ function advanceSequential(swarmId: string, regularFlights: FlightRecord[]): Adv
   for (const flight of regularFlights) {
     if (flight.status === "waiting") {
       const prevIndex = flight.flight_index - 1;
+      const prevFlight = regularFlights.find(f => f.flight_index === prevIndex);
       const canAdvance =
         prevIndex < 0 ||
-        regularFlights.find(f => f.flight_index === prevIndex)?.status === "done";
+        prevFlight?.status === "done" ||
+        prevFlight?.status === "dead_letter";
 
       if (canAdvance) {
         const result = promoteOrGate(flight, swarmId);

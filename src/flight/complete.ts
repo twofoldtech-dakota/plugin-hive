@@ -14,6 +14,7 @@ import { checkProducedKeys } from "../nectar/contracts.js";
 import { checkBudget } from "../budget/budget.js";
 import { checkFlightAnomaly } from "../anomaly/detector.js";
 import { handleSubSwarmCompletion } from "./sub-swarm.js";
+import { recordCircuitSuccess } from "../resilience/circuit-breaker.js";
 import type { LoopConfig, BlueprintSpec, FlightRecord } from "../types.js";
 
 export type CompleteFlightResult =
@@ -87,6 +88,7 @@ export function completeFlight(flightId: string, output: string): CompleteFlight
   const usage = db.getUsageForFlight(flightId);
   const tokens = usage ? usage.input_tokens + usage.output_tokens : 0;
   updateBeeStats(flight.bee_id, true, durationSec, tokens);
+  recordCircuitSuccess(flight.bee_id);
   const nectarKeysProduced = Object.keys(nectar);
   insertTrace(flightId, flight.swarm_id, "output", { output_length: output.length, nectar_keys_produced: nectarKeysProduced });
   emitEvent({ eventType: "flight.completed", swarmId: flight.swarm_id, payload: { flight_id: flight.flight_id } });

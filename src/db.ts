@@ -38,6 +38,14 @@ import type {
   NotificationRouteRecord,
   WebhookTokenRecord,
   WebhookAuditRecord,
+  SwarmScheduleRecord,
+  ScheduleRunRecord,
+  CircuitBreakerRecord,
+  CircuitState,
+  DeadLetterRecord,
+  BlueprintTestCaseRecord,
+  BlueprintTestRunRecord,
+  HealthSnapshot,
 } from "./types.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -668,6 +676,117 @@ function migrate(db: DatabaseSync): void {
     INSERT OR IGNORE INTO hive_config (key, value) VALUES ('registry_url', '');
     INSERT OR IGNORE INTO hive_config (key, value) VALUES ('registry_cache_hours', '24');
   `);
+
+  // Phase 18 — new tables
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS swarm_schedules (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      blueprint_id TEXT NOT NULL,
+      cron_expression TEXT NOT NULL,
+      task_template TEXT NOT NULL,
+      variables TEXT DEFAULT '{}',
+      overlap_behavior TEXT DEFAULT 'skip',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      priority INTEGER DEFAULT 5,
+      last_run_at TEXT,
+      next_run_at TEXT,
+      run_count INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON swarm_schedules(enabled, next_run_at);
+
+    CREATE TABLE IF NOT EXISTS schedule_runs (
+      id TEXT PRIMARY KEY,
+      schedule_id TEXT NOT NULL REFERENCES swarm_schedules(id),
+      swarm_id TEXT,
+      triggered_at TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'started',
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_schedule_runs_schedule ON schedule_runs(schedule_id);
+
+    CREATE TABLE IF NOT EXISTS circuit_breakers (
+      id TEXT PRIMARY KEY,
+      bee_id TEXT NOT NULL UNIQUE,
+      state TEXT NOT NULL DEFAULT 'closed',
+      failure_count INTEGER DEFAULT 0,
+      success_count INTEGER DEFAULT 0,
+      last_failure_at TEXT,
+      opened_at TEXT,
+      half_open_at TEXT,
+      threshold INTEGER DEFAULT 5,
+      timeout_minutes INTEGER DEFAULT 10,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_circuit_state ON circuit_breakers(state);
+
+    CREATE TABLE IF NOT EXISTS dead_letters (
+      id TEXT PRIMARY KEY,
+      flight_uuid TEXT NOT NULL,
+      swarm_id TEXT NOT NULL,
+      flight_id TEXT NOT NULL,
+      bee_id TEXT NOT NULL,
+      last_error TEXT NOT NULL,
+      retry_count INTEGER DEFAULT 0,
+      error_context TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      replayed_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_dl_swarm ON dead_letters(swarm_id);
+    CREATE INDEX IF NOT EXISTS idx_dl_status ON dead_letters(status);
+
+    CREATE TABLE IF NOT EXISTS blueprint_test_cases (
+      id TEXT PRIMARY KEY,
+      blueprint_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      mock_inputs TEXT NOT NULL DEFAULT '{}',
+      mock_outputs TEXT NOT NULL DEFAULT '{}',
+      assertions TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_test_cases_bp ON blueprint_test_cases(blueprint_id);
+
+    CREATE TABLE IF NOT EXISTS blueprint_test_runs (
+      id TEXT PRIMARY KEY,
+      blueprint_id TEXT NOT NULL,
+      test_case_id TEXT NOT NULL,
+      passed INTEGER NOT NULL DEFAULT 0,
+      results TEXT NOT NULL DEFAULT '[]',
+      duration_ms INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_test_runs_bp ON blueprint_test_runs(blueprint_id);
+
+    CREATE TABLE IF NOT EXISTS hive_health_snapshots (
+      id TEXT PRIMARY KEY,
+      composite_score REAL NOT NULL,
+      factors TEXT NOT NULL DEFAULT '[]',
+      computed_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_health_computed ON hive_health_snapshots(computed_at);
+  `);
+
+  // Phase 18 — new column on flights
+  const flightCols18 = db.prepare("PRAGMA table_info(flights)").all() as Array<{ name: string }>;
+  if (!flightCols18.some(c => c.name === "on_exhausted")) {
+    db.exec("ALTER TABLE flights ADD COLUMN on_exhausted TEXT");
+  }
+
+  // Phase 18 — seed config
+  db.exec(`
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('schedule_evaluation_enabled', 'true');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('circuit_breaker_enabled', 'false');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('circuit_breaker_threshold', '5');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('circuit_breaker_timeout_minutes', '10');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('health_alert_threshold', '50');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('health_snapshot_enabled', 'true');
+  `);
 }
 
 // ── Blueprints ───────────────────────────────────────────────────────
@@ -837,6 +956,7 @@ export function insertFlight(
   subSwarmConfig?: string,
   failoverConfig?: string,
   nectarRefs?: string,
+  onExhausted?: string,
 ): FlightRecord {
   const db = getDb();
   const id = randomUUID();
@@ -844,9 +964,9 @@ export function insertFlight(
   const producesJson = produces && produces.length > 0 ? JSON.stringify(produces) : null;
   const requiresJson = requires && requires.length > 0 ? JSON.stringify(requires) : null;
   db.prepare(
-    `INSERT INTO flights (id, swarm_id, flight_id, bee_id, flight_index, input_template, expects, status, max_retries, type, loop_config, depends_on, when_clause, gate, retry_strategy, produces, requires, sub_swarm_config, failover_config, nectar_refs)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, swarmId, flightId, beeId, flightIndex, inputTemplate, expects, status, maxRetries, type, loopConfig ?? null, dependsOnJson, whenClause ?? null, gate ?? null, retryStrategy ?? null, producesJson, requiresJson, subSwarmConfig ?? null, failoverConfig ?? null, nectarRefs ?? null);
+    `INSERT INTO flights (id, swarm_id, flight_id, bee_id, flight_index, input_template, expects, status, max_retries, type, loop_config, depends_on, when_clause, gate, retry_strategy, produces, requires, sub_swarm_config, failover_config, nectar_refs, on_exhausted)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, swarmId, flightId, beeId, flightIndex, inputTemplate, expects, status, maxRetries, type, loopConfig ?? null, dependsOnJson, whenClause ?? null, gate ?? null, retryStrategy ?? null, producesJson, requiresJson, subSwarmConfig ?? null, failoverConfig ?? null, nectarRefs ?? null, onExhausted ?? null);
   return getFlight(id)!;
 }
 
@@ -2645,6 +2765,351 @@ export function getWebhookAuditLog(filters?: { token_id?: string; limit?: number
   return rows<WebhookAuditRecord>(
     db.prepare(`SELECT * FROM webhook_audit_log ${where} ORDER BY created_at DESC LIMIT ?`).all(...params, limit),
   );
+}
+
+// ── Phase 18: Swarm Schedules ────────────────────────────────────────
+
+export function insertSchedule(
+  name: string,
+  blueprintId: string,
+  cronExpression: string,
+  taskTemplate: string,
+  variables?: string,
+  overlapBehavior?: string,
+  priority?: number,
+  nextRunAt?: string,
+): SwarmScheduleRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    `INSERT INTO swarm_schedules (id, name, blueprint_id, cron_expression, task_template, variables, overlap_behavior, priority, next_run_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, name, blueprintId, cronExpression, taskTemplate, variables ?? "{}", overlapBehavior ?? "skip", priority ?? 5, nextRunAt ?? null);
+  return row<SwarmScheduleRecord>(db.prepare("SELECT * FROM swarm_schedules WHERE id = ?").get(id));
+}
+
+export function getSchedule(id: string): SwarmScheduleRecord | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM swarm_schedules WHERE id = ?").get(id);
+  return result ? row<SwarmScheduleRecord>(result) : undefined;
+}
+
+export function getScheduleByName(name: string): SwarmScheduleRecord | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM swarm_schedules WHERE name = ?").get(name);
+  return result ? row<SwarmScheduleRecord>(result) : undefined;
+}
+
+export function listSchedules(filters?: { blueprint_id?: string; enabled?: boolean }): SwarmScheduleRecord[] {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: SQLInputValue[] = [];
+  if (filters?.blueprint_id) {
+    conditions.push("blueprint_id = ?");
+    params.push(filters.blueprint_id);
+  }
+  if (filters?.enabled !== undefined) {
+    conditions.push("enabled = ?");
+    params.push(filters.enabled ? 1 : 0);
+  }
+  const where = conditions.length > 0 ? "WHERE " + conditions.join(" AND ") : "";
+  const stmt = db.prepare(`SELECT * FROM swarm_schedules ${where} ORDER BY created_at DESC`);
+  return rows<SwarmScheduleRecord>(params.length > 0 ? stmt.all(...params) : stmt.all());
+}
+
+export function deleteSchedule(id: string): boolean {
+  const db = getDb();
+  db.prepare("DELETE FROM schedule_runs WHERE schedule_id = ?").run(id);
+  return Number(db.prepare("DELETE FROM swarm_schedules WHERE id = ?").run(id).changes) > 0;
+}
+
+export function updateSchedule(
+  id: string,
+  updates: Partial<Pick<SwarmScheduleRecord, "enabled" | "last_run_at" | "next_run_at" | "run_count">>,
+): void {
+  const db = getDb();
+  const sets: string[] = ["updated_at = datetime('now')"];
+  const params: SQLInputValue[] = [];
+  if (updates.enabled !== undefined) {
+    sets.push("enabled = ?");
+    params.push(updates.enabled);
+  }
+  if (updates.last_run_at !== undefined) {
+    sets.push("last_run_at = ?");
+    params.push(updates.last_run_at);
+  }
+  if (updates.next_run_at !== undefined) {
+    sets.push("next_run_at = ?");
+    params.push(updates.next_run_at);
+  }
+  if (updates.run_count !== undefined) {
+    sets.push("run_count = ?");
+    params.push(updates.run_count);
+  }
+  params.push(id);
+  db.prepare(`UPDATE swarm_schedules SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+}
+
+export function getDueSchedules(): SwarmScheduleRecord[] {
+  const db = getDb();
+  return rows<SwarmScheduleRecord>(
+    db.prepare("SELECT * FROM swarm_schedules WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= datetime('now')").all(),
+  );
+}
+
+export function insertScheduleRun(scheduleId: string, swarmId: string | null, triggeredAt: string, status: string = "started"): ScheduleRunRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO schedule_runs (id, schedule_id, swarm_id, triggered_at, status) VALUES (?, ?, ?, ?, ?)",
+  ).run(id, scheduleId, swarmId, triggeredAt, status);
+  return row<ScheduleRunRecord>(db.prepare("SELECT * FROM schedule_runs WHERE id = ?").get(id));
+}
+
+export function getScheduleHistory(scheduleId: string, limit: number = 20): ScheduleRunRecord[] {
+  const db = getDb();
+  return rows<ScheduleRunRecord>(
+    db.prepare("SELECT * FROM schedule_runs WHERE schedule_id = ? ORDER BY triggered_at DESC LIMIT ?").all(scheduleId, limit),
+  );
+}
+
+export function getLastScheduleRun(scheduleId: string): ScheduleRunRecord | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM schedule_runs WHERE schedule_id = ? ORDER BY triggered_at DESC LIMIT 1").get(scheduleId);
+  return result ? row<ScheduleRunRecord>(result) : undefined;
+}
+
+// ── Phase 18: Circuit Breakers ──────────────────────────────────────
+
+export function getCircuitBreaker(beeId: string): CircuitBreakerRecord | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM circuit_breakers WHERE bee_id = ?").get(beeId);
+  return result ? row<CircuitBreakerRecord>(result) : undefined;
+}
+
+export function upsertCircuitBreaker(
+  beeId: string,
+  updates: Partial<Pick<CircuitBreakerRecord, "state" | "failure_count" | "success_count" | "last_failure_at" | "opened_at" | "half_open_at" | "threshold" | "timeout_minutes">>,
+): CircuitBreakerRecord {
+  const db = getDb();
+  const existing = getCircuitBreaker(beeId);
+  if (existing) {
+    const sets: string[] = ["updated_at = datetime('now')"];
+    const params: SQLInputValue[] = [];
+    if (updates.state !== undefined) { sets.push("state = ?"); params.push(updates.state); }
+    if (updates.failure_count !== undefined) { sets.push("failure_count = ?"); params.push(updates.failure_count); }
+    if (updates.success_count !== undefined) { sets.push("success_count = ?"); params.push(updates.success_count); }
+    if (updates.last_failure_at !== undefined) { sets.push("last_failure_at = ?"); params.push(updates.last_failure_at); }
+    if (updates.opened_at !== undefined) { sets.push("opened_at = ?"); params.push(updates.opened_at); }
+    if (updates.half_open_at !== undefined) { sets.push("half_open_at = ?"); params.push(updates.half_open_at); }
+    if (updates.threshold !== undefined) { sets.push("threshold = ?"); params.push(updates.threshold); }
+    if (updates.timeout_minutes !== undefined) { sets.push("timeout_minutes = ?"); params.push(updates.timeout_minutes); }
+    params.push(beeId);
+    db.prepare(`UPDATE circuit_breakers SET ${sets.join(", ")} WHERE bee_id = ?`).run(...params);
+  } else {
+    const id = randomUUID();
+    db.prepare(
+      "INSERT INTO circuit_breakers (id, bee_id, state, failure_count, success_count, last_failure_at, opened_at, half_open_at, threshold, timeout_minutes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(id, beeId, updates.state ?? "closed", updates.failure_count ?? 0, updates.success_count ?? 0, updates.last_failure_at ?? null, updates.opened_at ?? null, updates.half_open_at ?? null, updates.threshold ?? 5, updates.timeout_minutes ?? 10);
+  }
+  return getCircuitBreaker(beeId)!;
+}
+
+export function listCircuitBreakers(state?: CircuitState): CircuitBreakerRecord[] {
+  const db = getDb();
+  if (state) {
+    return rows<CircuitBreakerRecord>(db.prepare("SELECT * FROM circuit_breakers WHERE state = ? ORDER BY updated_at DESC").all(state));
+  }
+  return rows<CircuitBreakerRecord>(db.prepare("SELECT * FROM circuit_breakers ORDER BY updated_at DESC").all());
+}
+
+export function getOpenCircuits(): CircuitBreakerRecord[] {
+  const db = getDb();
+  return rows<CircuitBreakerRecord>(
+    db.prepare("SELECT * FROM circuit_breakers WHERE state IN ('open', 'half_open') ORDER BY updated_at DESC").all(),
+  );
+}
+
+export function getExpiredOpenCircuits(timeoutMinutes: number): CircuitBreakerRecord[] {
+  const db = getDb();
+  return rows<CircuitBreakerRecord>(
+    db.prepare(
+      `SELECT * FROM circuit_breakers WHERE state = 'open' AND opened_at IS NOT NULL
+       AND opened_at <= datetime('now', '-' || ? || ' minutes')`,
+    ).all(timeoutMinutes),
+  );
+}
+
+// ── Phase 18: Dead Letter Queue ─────────────────────────────────────
+
+export function insertDeadLetter(
+  flightUuid: string,
+  swarmId: string,
+  flightId: string,
+  beeId: string,
+  lastError: string,
+  retryCount: number,
+  errorContext?: string,
+): DeadLetterRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO dead_letters (id, flight_uuid, swarm_id, flight_id, bee_id, last_error, retry_count, error_context) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(id, flightUuid, swarmId, flightId, beeId, lastError, retryCount, errorContext ?? null);
+  return row<DeadLetterRecord>(db.prepare("SELECT * FROM dead_letters WHERE id = ?").get(id));
+}
+
+export function getDeadLetter(id: string): DeadLetterRecord | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM dead_letters WHERE id = ?").get(id);
+  return result ? row<DeadLetterRecord>(result) : undefined;
+}
+
+export function listDeadLetters(filters?: { swarm_id?: string; status?: string }): DeadLetterRecord[] {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: SQLInputValue[] = [];
+  if (filters?.swarm_id) {
+    conditions.push("swarm_id = ?");
+    params.push(filters.swarm_id);
+  }
+  if (filters?.status) {
+    conditions.push("status = ?");
+    params.push(filters.status);
+  }
+  const where = conditions.length > 0 ? "WHERE " + conditions.join(" AND ") : "";
+  const stmt = db.prepare(`SELECT * FROM dead_letters ${where} ORDER BY created_at DESC`);
+  return rows<DeadLetterRecord>(params.length > 0 ? stmt.all(...params) : stmt.all());
+}
+
+export function updateDeadLetter(id: string, updates: Partial<Pick<DeadLetterRecord, "status" | "replayed_at">>): void {
+  const db = getDb();
+  const sets: string[] = [];
+  const params: SQLInputValue[] = [];
+  if (updates.status !== undefined) { sets.push("status = ?"); params.push(updates.status); }
+  if (updates.replayed_at !== undefined) { sets.push("replayed_at = ?"); params.push(updates.replayed_at); }
+  if (sets.length === 0) return;
+  params.push(id);
+  db.prepare(`UPDATE dead_letters SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+}
+
+export function getPendingDeadLetterCount(): number {
+  const db = getDb();
+  return row<{ count: number }>(db.prepare("SELECT COUNT(*) as count FROM dead_letters WHERE status = 'pending'").get()).count;
+}
+
+// ── Phase 18: Blueprint Test Cases ──────────────────────────────────
+
+export function insertTestCase(
+  blueprintId: string,
+  name: string,
+  mockInputs: string,
+  mockOutputs: string,
+  assertions: string,
+  description?: string,
+): BlueprintTestCaseRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO blueprint_test_cases (id, blueprint_id, name, description, mock_inputs, mock_outputs, assertions) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  ).run(id, blueprintId, name, description ?? null, mockInputs, mockOutputs, assertions);
+  return row<BlueprintTestCaseRecord>(db.prepare("SELECT * FROM blueprint_test_cases WHERE id = ?").get(id));
+}
+
+export function getTestCase(id: string): BlueprintTestCaseRecord | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM blueprint_test_cases WHERE id = ?").get(id);
+  return result ? row<BlueprintTestCaseRecord>(result) : undefined;
+}
+
+export function listTestCases(blueprintId: string): BlueprintTestCaseRecord[] {
+  const db = getDb();
+  return rows<BlueprintTestCaseRecord>(
+    db.prepare("SELECT * FROM blueprint_test_cases WHERE blueprint_id = ? ORDER BY created_at ASC").all(blueprintId),
+  );
+}
+
+export function deleteTestCase(id: string): boolean {
+  const db = getDb();
+  return Number(db.prepare("DELETE FROM blueprint_test_cases WHERE id = ?").run(id).changes) > 0;
+}
+
+export function insertTestRun(
+  blueprintId: string,
+  testCaseId: string,
+  passed: boolean,
+  results: string,
+  durationMs: number,
+): BlueprintTestRunRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO blueprint_test_runs (id, blueprint_id, test_case_id, passed, results, duration_ms) VALUES (?, ?, ?, ?, ?, ?)",
+  ).run(id, blueprintId, testCaseId, passed ? 1 : 0, results, durationMs);
+  return row<BlueprintTestRunRecord>(db.prepare("SELECT * FROM blueprint_test_runs WHERE id = ?").get(id));
+}
+
+export function getTestRunsForBlueprint(blueprintId: string, limit: number = 20): BlueprintTestRunRecord[] {
+  const db = getDb();
+  return rows<BlueprintTestRunRecord>(
+    db.prepare("SELECT * FROM blueprint_test_runs WHERE blueprint_id = ? ORDER BY created_at DESC LIMIT ?").all(blueprintId, limit),
+  );
+}
+
+// ── Phase 18: Health Snapshots ──────────────────────────────────────
+
+export function insertHealthSnapshot(compositeScore: number, factors: string): HealthSnapshot {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO hive_health_snapshots (id, composite_score, factors) VALUES (?, ?, ?)",
+  ).run(id, compositeScore, factors);
+  return row<HealthSnapshot>(db.prepare("SELECT * FROM hive_health_snapshots WHERE id = ?").get(id));
+}
+
+export function getHealthHistory(limit: number = 20): HealthSnapshot[] {
+  const db = getDb();
+  return rows<HealthSnapshot>(
+    db.prepare("SELECT * FROM hive_health_snapshots ORDER BY computed_at DESC LIMIT ?").all(limit),
+  );
+}
+
+export function getLatestHealthSnapshot(): HealthSnapshot | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM hive_health_snapshots ORDER BY computed_at DESC LIMIT 1").get();
+  return result ? row<HealthSnapshot>(result) : undefined;
+}
+
+// ── Phase 18: Query helpers ─────────────────────────────────────────
+
+export function getOverdueScheduleCount(): number {
+  const db = getDb();
+  return row<{ count: number }>(
+    db.prepare("SELECT COUNT(*) as count FROM swarm_schedules WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= datetime('now')").get(),
+  ).count;
+}
+
+export function getQueuedSwarmCount(): number {
+  const db = getDb();
+  return row<{ count: number }>(
+    db.prepare("SELECT COUNT(*) as count FROM swarms WHERE status = 'queued'").get(),
+  ).count;
+}
+
+export function getBuzzingSwarmBudgets(): Array<{ id: string; token_budget: number; consumed: number }> {
+  const db = getDb();
+  return db.prepare(
+    `SELECT s.id, s.token_budget,
+       COALESCE((SELECT SUM(input_tokens + output_tokens) FROM flight_usage WHERE swarm_id = s.id), 0) as consumed
+     FROM swarms s WHERE s.status = 'buzzing' AND s.token_budget > 0`,
+  ).all() as Array<{ id: string; token_budget: number; consumed: number }>;
+}
+
+export function getActiveBeeSuccessRates(): Array<{ bee_id: string; success_rate: number }> {
+  const db = getDb();
+  return db.prepare(
+    "SELECT bee_id, success_rate FROM bee_stats WHERE total_flights >= 3 ORDER BY updated_at DESC LIMIT 50",
+  ).all() as Array<{ bee_id: string; success_rate: number }>;
 }
 
 /** Close the database connection */

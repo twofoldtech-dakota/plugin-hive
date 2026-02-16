@@ -8,6 +8,8 @@ import { insertTrace } from "../trace/record.js";
 import { checkAndFireTriggers } from "../chain/trigger.js";
 import { updateBeeStats } from "../usage/bee-stats.js";
 import { resolveFailover, applyFailover } from "./failover.js";
+import { recordCircuitFailure } from "../resilience/circuit-breaker.js";
+import { deadLetterFlight } from "../resilience/dlq.js";
 import type { RetryStrategy } from "../types.js";
 
 export type FailFlightResult =
@@ -65,7 +67,21 @@ export function failFlight(flightId: string, error: string, context?: string): F
     };
   }
 
-  // No retries left — fail the flight and the swarm
+  // No retries left — check DLQ config
+  const qualifiedBeeId = `${flight.bee_id}`;
+  recordCircuitFailure(qualifiedBeeId);
+
+  if (flight.on_exhausted === "dlq") {
+    // DLQ path: flight goes to dead letter, swarm continues
+    const dlqResult = deadLetterFlight(flightId, error, context);
+    return {
+      success: true,
+      retrying: false,
+      message: dlqResult.message,
+    };
+  }
+
+  // Default path: fail the flight and the swarm
   const now = nowUtc();
   db.updateFlight(flightId, {
     status: "failed", output: error, current_cell_id: null, completed_at: now,

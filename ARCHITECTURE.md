@@ -2657,3 +2657,80 @@ Authenticated HTTP endpoints for external systems to interact with the hive.
 | `src/notification/formatters/pagerduty.ts` | PagerDuty Events API v2 formatter |
 | `src/webhook/tokens.ts` | Webhook token management |
 | `src/webhook/inbound.ts` | Inbound webhook HTTP handler |
+
+---
+
+## Phase 18 — Hive Autonomy: Scheduling, Resilience & Quality Assurance
+
+Phase 18 hardens the system around three pillars: temporal autonomy (scheduled recurring swarms), failure resilience (circuit breakers + dead letter queue), and quality confidence (blueprint testing + composite health scoring).
+
+### 18.1 Scheduled Swarms (`src/scheduler/`)
+
+Cron-based recurring swarm execution with overlap control and history tracking.
+
+- **`cron.ts`** — Pure-function 5-field cron parser (parseCron, cronMatches, nextCronRun)
+- **`manager.ts`** — Schedule CRUD: createSchedule, listSchedules, deleteSchedule, toggleSchedule, getScheduleHistory
+- **`evaluate.ts`** — Evaluator for due schedules with overlap behavior (skip/queue/cancel_previous)
+- **6 MCP tools:** `hive_schedule_create`, `hive_schedule_list`, `hive_schedule_delete`, `hive_schedule_toggle`, `hive_schedule_history`, `hive_schedule_evaluate`
+
+### 18.2 Circuit Breakers (`src/resilience/circuit-breaker.ts`)
+
+Per-bee failure isolation with three-state machine: closed → open → half_open → closed.
+
+- **`circuitAllowsClaim()`** gates flight claims when circuit is open
+- **`recordCircuitSuccess/Failure()`** tracks outcomes and transitions states
+- **`transitionExpiredCircuits()`** auto-recovers open circuits after timeout
+- Integrated with flight claim, complete, and fail paths
+- **2 MCP tools:** `hive_circuit_list`, `hive_circuit_reset`
+
+### 18.3 Dead Letter Queue (`src/resilience/dlq.ts`)
+
+Flights that exhaust retries land in DLQ instead of killing the swarm. Controlled via `on_exhausted: "dlq"` on flight specs.
+
+- **`deadLetterFlight()`** — moves flight to dead_letter status, swarm continues
+- **`replayDeadLetter()`** — resets flight to pending, marks DL as replayed
+- **`purgeDeadLetters()`** — marks dead letters as purged
+- Pipeline advance handles dead_letter status (counts as done for completion, blocks in DAG dependents)
+- **3 MCP tools:** `hive_dlq_list`, `hive_dlq_replay`, `hive_dlq_purge`
+
+### 18.4 Blueprint Test Framework (`src/blueprint/testing/`)
+
+Automated tests for blueprints with mocked bee outputs and nectar assertions.
+
+- **`manager.ts`** — Test case CRUD: addTestCase, listTestCases, deleteTestCase
+- **`runner.ts`** — Test execution: runBlueprintTest, runBlueprintTestSuite
+- Topological sort for DAG flight order, when-clause evaluation, KEY: VALUE nectar parsing
+- Assertion types: nectar_equals, nectar_contains, nectar_exists, flight_status
+- **4 MCP tools:** `hive_blueprint_test_add`, `hive_blueprint_test_list`, `hive_blueprint_test_run`, `hive_blueprint_test_delete`
+
+### 18.5 Hive Health Score (`src/observatory/health.ts`, `health-factors.ts`)
+
+Composite 0-100 health score from 8 weighted factors with trend analysis.
+
+- **Factors:** failure_rate (0.25), circuit_breaker (0.15), dlq (0.15), anomaly (0.10), queue_depth (0.10), budget (0.10), scheduler (0.10), bee_performance (0.05)
+- Trend detection: improving (>+5), declining (<-5), stable
+- Auto-snapshots during beekeeper checks
+- Health alerts when score drops below configurable threshold
+- **2 MCP tools:** `hive_health`, `hive_health_history`
+
+### Schema Changes
+
+- **7 new tables:** swarm_schedules, schedule_runs, circuit_breakers, dead_letters, blueprint_test_cases, blueprint_test_runs, hive_health_snapshots
+- **1 new column:** flights.on_exhausted TEXT
+- **6 config keys:** schedule_evaluation_enabled, circuit_breaker_enabled, circuit_breaker_threshold, circuit_breaker_timeout_minutes, health_alert_threshold, health_snapshot_enabled
+- **14 events:** schedule.created, schedule.triggered, schedule.skipped, schedule.toggled, schedule.deleted, circuit.opened, circuit.closed, circuit.half_open, flight.dead_lettered, dlq.replayed, dlq.purged, blueprint.test_passed, blueprint.test_failed, health.snapshot, health.alert
+- **6 API endpoints:** GET /api/schedules, /api/schedules/:id/history, /api/circuits, /api/dlq, /api/health, /api/health/history
+
+### Beekeeper Integration
+
+- **checkDueSchedules()** — advisory check for overdue schedules with evaluateSchedules remediation
+- **checkOpenCircuits()** — transitions expired circuits, reports open/half-open states
+- **checkDeadLetters()** — reports pending dead letters requiring attention
+- **computeHealthScore()** — auto-snapshots health at end of each beekeeper cycle
+
+### Cumulative Totals
+
+- MCP tools: 109
+- DB tables: 37+
+- Source files: 150+
+- Events: 70+

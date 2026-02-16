@@ -93,6 +93,23 @@ Multi-agent swarm orchestration for Claude Code. Deploy specialized bees to auto
 | `/hive webhook token list` | List webhook tokens |
 | `/hive webhook token revoke <id>` | Revoke a webhook token |
 | `/hive webhook audit` | View webhook audit log |
+| `/hive schedule create <name> <bp> <cron> <task>` | Create a recurring schedule |
+| `/hive schedule list` | List all schedules |
+| `/hive schedule delete <id>` | Delete a schedule |
+| `/hive schedule toggle <id>` | Enable/disable a schedule |
+| `/hive schedule history <id>` | View schedule run history |
+| `/hive schedule evaluate` | Evaluate due schedules |
+| `/hive circuits [--state=X]` | List circuit breaker states |
+| `/hive circuit reset <bee_id>` | Reset a circuit breaker |
+| `/hive dlq [swarm_id]` | List dead-lettered flights |
+| `/hive dlq replay <id>` | Replay a dead-lettered flight |
+| `/hive dlq purge [id\|--swarm=N]` | Purge dead letters |
+| `/hive test add <bp> <name>` | Add a blueprint test case |
+| `/hive test list <bp>` | List blueprint test cases |
+| `/hive test run <bp\|test_id>` | Run blueprint test(s) |
+| `/hive test delete <test_id>` | Delete a test case |
+| `/hive health` | Show hive health score |
+| `/hive health history` | Show health score history |
 | `/hive-drive <bp> <task>` | Autonomously drive a swarm start-to-finish |
 | `/hive-drive <N>` | Resume driving an existing buzzing swarm |
 
@@ -156,11 +173,16 @@ Multi-agent swarm orchestration for Claude Code. Deploy specialized bees to auto
 | **Notification Route** | Glob-pattern rule mapping events to channels |
 | **Inbound Webhook** | Authenticated HTTP endpoint for external system integration |
 | **Webhook Token** | Bearer token with scoped permissions for inbound webhooks |
+| **Schedule** | Cron-based recurring swarm trigger with overlap control |
+| **Circuit Breaker** | Per-bee failure isolation (closed/open/half-open states) |
+| **Dead Letter** | A flight that exhausted retries, queued for manual intervention |
+| **Blueprint Test** | Automated test case for blueprint validation with mock outputs |
+| **Health Score** | Composite 0-100 rating of hive operational health |
 
 ## Architecture
 
-- **MCP Server** provides 92 tools (`hive_*`) for swarm orchestration
-- **SQLite DB** at `~/.plugin-hive/hive.db` stores all state (includes `hive_config`, `swarm_archives`, `blueprint_versions`, `flight_cache`, `swarm_templates`, `model_routing_log`, `flight_baselines`, `anomaly_alerts`, `nectar_shares`, `registry_cache`, `blueprint_ratings`, `notification_channels`, `notification_routes`, `webhook_tokens`, and `webhook_audit_log` tables)
+- **MCP Server** provides 109 tools (`hive_*`) for swarm orchestration
+- **SQLite DB** at `~/.plugin-hive/hive.db` stores all state (includes `hive_config`, `swarm_archives`, `blueprint_versions`, `flight_cache`, `swarm_templates`, `model_routing_log`, `flight_baselines`, `anomaly_alerts`, `nectar_shares`, `registry_cache`, `blueprint_ratings`, `notification_channels`, `notification_routes`, `webhook_tokens`, `webhook_audit_log`, `swarm_schedules`, `schedule_runs`, `circuit_breakers`, `dead_letters`, `blueprint_test_cases`, `blueprint_test_runs`, and `hive_health_snapshots` tables)
 - **Flight pipeline** advances automatically as bees complete work
 - **Conditional flights** (`when:`) skip flights based on nectar values
 - **Flight gates** (`gate: approval`) pause for human confirmation
@@ -207,6 +229,11 @@ Multi-agent swarm orchestration for Claude Code. Deploy specialized bees to auto
 - **Blueprint registry** syncs community blueprints from remote JSON indexes with local caching and ratings
 - **Notification channels v2** routes events to webhook, Slack, Discord, and PagerDuty via glob-pattern rules
 - **Inbound webhooks** provide authenticated HTTP endpoints for external systems to start swarms, approve gates, set nectar, and stop swarms
+- **Scheduled swarms** trigger recurring swarms from cron expressions with overlap control (skip/queue/cancel_previous)
+- **Circuit breakers** isolate per-bee failures with three states (closed/open/half_open) and auto-recovery
+- **Dead letter queue** captures flights that exhaust retries without failing the swarm
+- **Blueprint testing** validates blueprints with mock outputs, nectar assertions, and flight status checks
+- **Hive health score** computes composite 0-100 health from 8 weighted factors with trend analysis
 
 ## Workflow
 

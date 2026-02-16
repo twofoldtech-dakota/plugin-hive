@@ -4,6 +4,7 @@ import { emitEvent } from "../lib/events.js";
 import { nowUtc } from "../lib/time.js";
 import { insertTrace } from "../trace/record.js";
 import { resolveNectarRefs } from "../nectar/share.js";
+import { circuitAllowsClaim } from "../resilience/circuit-breaker.js";
 import type { FlightClaimResult } from "../types.js";
 
 export type ClaimFlightResult =
@@ -13,6 +14,12 @@ export type ClaimFlightResult =
 export function claimFlight(beeId: string): ClaimFlightResult {
   const flight = db.claimFlightForBee(beeId);
   if (!flight) {
+    return { success: true, claimed: false };
+  }
+
+  // Circuit breaker check: if circuit is open, release the flight
+  if (!circuitAllowsClaim(beeId)) {
+    db.updateFlight(flight.id, { status: "pending" });
     return { success: true, claimed: false };
   }
 

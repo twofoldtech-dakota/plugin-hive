@@ -63,6 +63,7 @@ export interface FlightSpec {
   input: string;
   expects: string;
   max_retries: number;
+  on_exhausted?: "fail" | "dlq";
 }
 
 export interface InputSpec {
@@ -158,7 +159,8 @@ export type FlightStatus =
   | "done"
   | "failed"
   | "gated"
-  | "sub_swarm";
+  | "sub_swarm"
+  | "dead_letter";
 
 export interface FlightRecord {
   id: string;
@@ -199,6 +201,8 @@ export interface FlightRecord {
   original_bee_id: string | null;
   // Phase 17
   nectar_refs: string | null; // JSON string of NectarRef[]
+  // Phase 18
+  on_exhausted: string | null; // "dlq" or null (null = "fail")
 }
 
 export type CellStatus =
@@ -331,7 +335,23 @@ export type HiveEventType =
   | "route.created"
   | "webhook.inbound"
   | "webhook.token_created"
-  | "webhook.token_revoked";
+  | "webhook.token_revoked"
+  // Phase 18
+  | "schedule.created"
+  | "schedule.triggered"
+  | "schedule.skipped"
+  | "schedule.toggled"
+  | "schedule.deleted"
+  | "circuit.opened"
+  | "circuit.closed"
+  | "circuit.half_open"
+  | "flight.dead_lettered"
+  | "dlq.replayed"
+  | "dlq.purged"
+  | "blueprint.test_passed"
+  | "blueprint.test_failed"
+  | "health.snapshot"
+  | "health.alert";
 
 // ── Spawn Request (from pollinator) ─────────────────────────────────
 
@@ -1012,4 +1032,131 @@ export interface WebhookAuditRecord {
   ip_address: string | null;
   status: "success" | "denied" | "error";
   created_at: string;
+}
+
+// ── Phase 18: Scheduled Swarms ──────────────────────────────────────
+
+export interface SwarmScheduleRecord {
+  id: string;
+  name: string;
+  blueprint_id: string;
+  cron_expression: string;
+  task_template: string;
+  variables: string; // JSON
+  overlap_behavior: "skip" | "queue" | "cancel_previous";
+  enabled: number; // 0 or 1
+  priority: number;
+  last_run_at: string | null;
+  next_run_at: string | null;
+  run_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ScheduleRunRecord {
+  id: string;
+  schedule_id: string;
+  swarm_id: string | null;
+  triggered_at: string;
+  status: string;
+  created_at: string;
+}
+
+// ── Phase 18: Circuit Breakers ──────────────────────────────────────
+
+export type CircuitState = "closed" | "open" | "half_open";
+
+export interface CircuitBreakerRecord {
+  id: string;
+  bee_id: string;
+  state: CircuitState;
+  failure_count: number;
+  success_count: number;
+  last_failure_at: string | null;
+  opened_at: string | null;
+  half_open_at: string | null;
+  threshold: number;
+  timeout_minutes: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// ── Phase 18: Dead Letter Queue ─────────────────────────────────────
+
+export type DeadLetterStatus = "pending" | "replayed" | "purged";
+
+export interface DeadLetterRecord {
+  id: string;
+  flight_uuid: string;
+  swarm_id: string;
+  flight_id: string;
+  bee_id: string;
+  last_error: string;
+  retry_count: number;
+  error_context: string | null;
+  status: DeadLetterStatus;
+  replayed_at: string | null;
+  created_at: string;
+}
+
+// ── Phase 18: Blueprint Testing ─────────────────────────────────────
+
+export interface BlueprintTestCaseRecord {
+  id: string;
+  blueprint_id: string;
+  name: string;
+  description: string | null;
+  mock_inputs: string; // JSON
+  mock_outputs: string; // JSON
+  assertions: string; // JSON
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BlueprintTestRunRecord {
+  id: string;
+  blueprint_id: string;
+  test_case_id: string;
+  passed: number; // 0 or 1
+  results: string; // JSON
+  duration_ms: number;
+  created_at: string;
+}
+
+export type TestAssertionType = "nectar_equals" | "nectar_contains" | "nectar_exists" | "flight_status";
+
+export interface TestAssertion {
+  type: TestAssertionType;
+  target: string;
+  expected?: string;
+}
+
+export interface TestAssertionResult {
+  assertion: TestAssertion;
+  passed: boolean;
+  actual?: string;
+  message: string;
+}
+
+// ── Phase 18: Hive Health Score ─────────────────────────────────────
+
+export interface HealthFactor {
+  name: string;
+  score: number; // 0-100
+  weight: number; // 0.0-1.0
+  detail: string;
+}
+
+export interface HealthSnapshot {
+  id: string;
+  composite_score: number;
+  factors: string; // JSON array of HealthFactor
+  computed_at: string;
+}
+
+export interface HealthScoreResult {
+  composite_score: number;
+  trend: "improving" | "declining" | "stable";
+  factors: HealthFactor[];
+  computed_at: string;
 }

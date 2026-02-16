@@ -13,7 +13,11 @@ import { computeDAG } from "./dag.js";
 import { handleStreamRequest, getStreamStatus } from "./stream.js";
 import { handleInboundWebhook, getAuditLog } from "../webhook/inbound.js";
 import { searchRegistry } from "../registry/client.js";
-import type { SwarmStatus } from "../types.js";
+import { listSchedulesQuery, getScheduleHistoryQuery } from "../scheduler/manager.js";
+import { listCircuits } from "../resilience/circuit-breaker.js";
+import { listDeadLettersQuery } from "../resilience/dlq.js";
+import { computeHealthScore, getHealthHistoryQuery } from "./health.js";
+import type { SwarmStatus, CircuitState } from "../types.js";
 
 const VALID_SWARM_STATUSES = new Set<string>(["buzzing", "paused", "blocked", "completed", "failed", "cancelled", "scheduled", "queued"]);
 
@@ -372,6 +376,60 @@ export function handleRequest(req: IncomingMessage, res: ServerResponse): void {
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: err instanceof Error ? err.message : "Internal error" }));
       });
+      return;
+    }
+
+    // ── Phase 18: New API endpoints ──────────────────────────────
+
+    // GET /api/schedules
+    if (path === "/api/schedules" && req.method === "GET") {
+      const blueprintId = url.searchParams.get("blueprint_id") ?? undefined;
+      const enabledParam = url.searchParams.get("enabled");
+      const enabled = enabledParam !== null ? enabledParam === "true" : undefined;
+      json(res, listSchedulesQuery({ blueprint_id: blueprintId, enabled }));
+      return;
+    }
+
+    // GET /api/schedules/:id/history
+    const schedHistMatch = path.match(/^\/api\/schedules\/([^/]+)\/history$/);
+    if (schedHistMatch && req.method === "GET") {
+      const limitParam = url.searchParams.get("limit");
+      const limit = limitParam ? parseInt(limitParam, 10) : 20;
+      const result = getScheduleHistoryQuery(schedHistMatch[1], limit);
+      if (!result.success) {
+        notFound(res, result.error!);
+        return;
+      }
+      json(res, { schedule: result.schedule, runs: result.runs });
+      return;
+    }
+
+    // GET /api/circuits
+    if (path === "/api/circuits" && req.method === "GET") {
+      const stateParam = url.searchParams.get("state") as CircuitState | null;
+      json(res, listCircuits(stateParam ?? undefined));
+      return;
+    }
+
+    // GET /api/dlq
+    if (path === "/api/dlq" && req.method === "GET") {
+      const swarmId = url.searchParams.get("swarm_id") ?? undefined;
+      const status = url.searchParams.get("status") ?? undefined;
+      json(res, listDeadLettersQuery({ swarm_id: swarmId, status }));
+      return;
+    }
+
+    // GET /api/health
+    if (path === "/api/health" && req.method === "GET") {
+      json(res, computeHealthScore());
+      return;
+    }
+
+    // GET /api/health/history
+    if (path === "/api/health/history" && req.method === "GET") {
+      const limitParam = url.searchParams.get("limit");
+      const limit = limitParam ? parseInt(limitParam, 10) : 20;
+      json(res, getHealthHistoryQuery(limit));
       return;
     }
 
