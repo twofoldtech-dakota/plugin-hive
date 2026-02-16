@@ -1,5 +1,6 @@
 import * as db from "../db.js";
 import { safeJsonParse } from "../lib/json.js";
+import { serializeGateSpec } from "../flight/gate-policy.js";
 import type { BlueprintSpec, InputSpec } from "../types.js";
 
 export interface BlueprintInfo {
@@ -46,7 +47,7 @@ export function getBlueprintInfo(blueprintId: string): GetBlueprintInfoResult {
         bee: f.bee,
         type: f.type,
         when: f.when,
-        gate: f.gate,
+        gate: f.gate ? serializeGateSpec(f.gate) : undefined,
       })),
       inputs: spec.inputs,
       beekeeper: spec.beekeeper,

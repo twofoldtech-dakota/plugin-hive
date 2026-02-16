@@ -7,6 +7,8 @@ vi.mock("./loader.js", () => ({
 vi.mock("../db.js", () => ({
   insertBlueprint: vi.fn(),
   insertBlueprintSource: vi.fn(),
+  getLatestBlueprintVersionNumber: vi.fn(() => 0),
+  insertBlueprintVersion: vi.fn(),
 }));
 
 vi.mock("../lib/logger.js", () => ({

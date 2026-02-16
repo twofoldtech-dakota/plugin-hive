@@ -143,6 +143,56 @@ export function autoMaintain(_entityId: string): RemediationResult {
 }
 
 /**
+ * Resolve an expired gate based on on_timeout policy (approve or reject).
+ */
+export function resolveExpiredGate(flightId: string): RemediationResult {
+  const flight = db.getFlight(flightId);
+  if (!flight) {
+    return { action: "resolveExpiredGate", entity_id: flightId, success: false, detail: "Flight not found" };
+  }
+
+  let policy: { on_timeout?: string } = {};
+  try {
+    if (flight.gate && flight.gate !== "approval") {
+      policy = JSON.parse(flight.gate);
+    }
+  } catch {
+    // Fall through to default reject
+  }
+
+  const onTimeout = policy.on_timeout ?? "reject";
+
+  if (onTimeout === "approve") {
+    db.updateFlight(flightId, { status: "pending", gated_at: null });
+    emitEvent({ eventType: "gate.timed_out", swarmId: flight.swarm_id, payload: { flight_id: flight.flight_id, action: "approved" } });
+    logger.info("Beekeeper: gate timed out, auto-approved", { flightId });
+    return { action: "resolveExpiredGate", entity_id: flightId, success: true, detail: "Gate expired — auto-approved per policy" };
+  }
+
+  // Reject: fail the flight and swarm
+  db.updateFlight(flightId, { status: "failed", completed_at: nowUtc() });
+  db.updateSwarm(flight.swarm_id, { status: "failed" });
+  emitEvent({ eventType: "gate.timed_out", swarmId: flight.swarm_id, payload: { flight_id: flight.flight_id, action: "rejected" } });
+  emitEvent({ eventType: "swarm.failed", swarmId: flight.swarm_id, payload: { reason: "gate_timeout" } });
+  logger.info("Beekeeper: gate timed out, rejected", { flightId });
+  return { action: "resolveExpiredGate", entity_id: flightId, success: true, detail: "Gate expired — rejected per policy" };
+}
+
+/**
+ * Clean expired cache entries.
+ */
+export function cleanExpiredCache(_entityId: string): RemediationResult {
+  const deleted = db.deleteExpiredCache();
+  logger.info("Beekeeper: cleaned expired cache", { deleted });
+  return {
+    action: "cleanExpiredCache",
+    entity_id: "cache",
+    success: true,
+    detail: `Deleted ${deleted} expired cache entries`,
+  };
+}
+
+/**
  * Fail an exhausted flight and its swarm.
  */
 export function failExhaustedFlight(flightId: string): RemediationResult {

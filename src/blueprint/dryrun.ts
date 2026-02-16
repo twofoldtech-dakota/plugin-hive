@@ -1,6 +1,7 @@
 import * as db from "../db.js";
 import { safeJsonParse } from "../lib/json.js";
 import { resolveNectar } from "../flight/template.js";
+import { serializeGateSpec } from "../flight/gate-policy.js";
 import type { BlueprintSpec, FlightSpec } from "../types.js";
 
 export interface DryRunFlight {
@@ -105,7 +106,7 @@ export function dryRunBlueprint(
       order: i + 1,
       depends_on: f.depends_on,
       when: f.when,
-      gate: f.gate,
+      gate: f.gate ? serializeGateSpec(f.gate) : undefined,
       produces: f.produces,
       requires: f.requires,
       resolved_input_preview: resolvedPreview,

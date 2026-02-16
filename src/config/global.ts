@@ -1,6 +1,6 @@
 import * as db from "../db.js";
 
-const VALID_KEYS: Record<string, { type: "number" | "boolean"; description: string }> = {
+const VALID_KEYS: Record<string, { type: "number" | "boolean" | "string"; description: string }> = {
   max_concurrent_swarms: { type: "number", description: "Maximum number of buzzing swarms (0 = unlimited)" },
   max_flights_per_bee: { type: "number", description: "Maximum concurrent in-flight flights per bee" },
   retention_days: { type: "number", description: "Days before completed swarms are eligible for auto-archive" },
@@ -11,6 +11,11 @@ const VALID_KEYS: Record<string, { type: "number" | "boolean"; description: stri
   check_retention_days: { type: "number", description: "Days to retain beekeeper checks before maintenance cleanup" },
   webhook_retention_days: { type: "number", description: "Days to retain webhook deliveries before maintenance cleanup" },
   auto_maintain: { type: "boolean", description: "Automatically run maintenance during beekeeper checks" },
+  adaptive_enabled: { type: "boolean", description: "Enable adaptive tuning recommendations during beekeeper checks" },
+  default_token_budget: { type: "number", description: "Default token budget for new swarms (0 = unlimited)" },
+  default_budget_action: { type: "string", description: "Default action when budget exceeded (warn, pause, cancel)" },
+  cache_enabled: { type: "boolean", description: "Enable flight result caching" },
+  cache_ttl_hours: { type: "number", description: "Default cache entry TTL in hours" },
 };
 
 export interface ConfigEntry {

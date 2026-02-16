@@ -7,6 +7,7 @@ import { loadBlueprintFromDir } from "./loader.js";
 import { blueprintsDir } from "../lib/paths.js";
 import * as db from "../db.js";
 import { logger } from "../lib/logger.js";
+import { recordVersion } from "./version.js";
 
 export type RemoteInstallResult =
   | { success: true; message: string; blueprint_id: string }
@@ -64,6 +65,7 @@ export function installRemoteBlueprint(
     // Install in DB
     db.insertBlueprint(spec.id, spec.name ?? null, spec.version ?? null, JSON.stringify(spec));
     db.insertBlueprintSource(spec.id, "git", url, spec.version);
+    recordVersion(spec.id, spec);
 
     logger.info("Remote blueprint installed", { id: spec.id, url });
 

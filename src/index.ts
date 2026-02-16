@@ -48,7 +48,17 @@ import { replaySwarm } from "./replay/replay.js";
 import { getFleetMetrics } from "./metrics/fleet.js";
 import { runMaintenance } from "./maintenance/janitor.js";
 import { exportBlueprint, importBlueprint } from "./blueprint/export.js";
-import type { BlueprintSpec, HiveEventType } from "./types.js";
+import { estimateSwarm } from "./adaptive/estimate.js";
+import { analyzeTuning } from "./adaptive/tuner.js";
+import { setNectarKey, getNectar } from "./nectar/inject.js";
+import { recordVersion, getBlueprintHistory, diffBlueprintVersions } from "./blueprint/version.js";
+import { parseGateSpec, resolveGatePolicy } from "./flight/gate-policy.js";
+import { setBudget, getBudgetStatus } from "./budget/budget.js";
+import { getCacheStatus, clearCache } from "./cache/cache.js";
+import { compareSwarms } from "./compare/compare.js";
+import { injectFlight, skipFlight } from "./pipeline/dynamic.js";
+import { saveTemplate, listSavedTemplates, runTemplate } from "./swarm/templates.js";
+import type { BlueprintSpec, GatePolicy, HiveEventType } from "./types.js";
 
 // ── Initialize ───────────────────────────────────────────────────────
 
@@ -122,6 +132,7 @@ server.tool(
 
     const bp = result.blueprint;
     db.insertBlueprint(bp.id, bp.name ?? null, bp.version ?? null, JSON.stringify(bp));
+    recordVersion(bp.id, bp);
 
     return {
       content: [{
@@ -1084,6 +1095,313 @@ server.tool(
       return { content: [{ type: "text" as const, text: result.error }], isError: true };
     }
     return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  }),
+);
+
+// ── Phase 14: Estimation Tools ──────────────────────────────────────
+
+server.tool(
+  "hive_swarm_estimate",
+  "Predict cost and duration for a swarm before starting it, using historical bee_stats and fleet data",
+  {
+    blueprint_id: z.string().describe("The blueprint ID to estimate"),
+    variables: z.record(z.string(), z.string()).optional().describe("Optional input variables"),
+  },
+  errorBoundary(async ({ blueprint_id, variables }) => {
+    const result = estimateSwarm(blueprint_id, variables);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.estimate, null, 2) }] };
+  }),
+);
+
+// ── Phase 14: Gate Policy Tools ─────────────────────────────────────
+
+server.tool(
+  "hive_gate_list",
+  "List all pending gated flights with policy details and timeout countdowns",
+  {},
+  errorBoundary(async () => {
+    const gated = db.getGatedFlightsAll();
+    const gates = gated.map(f => {
+      const policy = f.gate ? (() => {
+        const spec = parseGateSpec(f.gate!);
+        return resolveGatePolicy(spec);
+      })() : { type: "approval" as const };
+
+      let timeoutInfo: { timeout_minutes: number; elapsed_minutes: number; remaining_minutes: number } | null = null;
+      if ((policy as GatePolicy).timeout_minutes && f.gated_at) {
+        const elapsedMs = Date.now() - new Date(f.gated_at.replace(" ", "T") + "Z").getTime();
+        const elapsed = Math.round(elapsedMs / 60000);
+        const timeout = (policy as GatePolicy).timeout_minutes!;
+        timeoutInfo = { timeout_minutes: timeout, elapsed_minutes: elapsed, remaining_minutes: Math.max(0, timeout - elapsed) };
+      }
+
+      return {
+        flight_uuid: f.id,
+        flight_id: f.flight_id,
+        swarm_id: f.swarm_id,
+        bee_id: f.bee_id,
+        policy,
+        gated_at: f.gated_at,
+        timeout: timeoutInfo,
+      };
+    });
+    return { content: [{ type: "text" as const, text: JSON.stringify(gates, null, 2) }] };
+  }),
+);
+
+// ── Phase 14: Adaptive Tuning Tools ─────────────────────────────────
+
+server.tool(
+  "hive_adaptive_tune",
+  "Analyze bee performance and recommend parameter adjustments. Use apply=true to mutate the blueprint.",
+  {
+    blueprint_id: z.string().describe("The blueprint ID to analyze"),
+    apply: z.boolean().optional().describe("Apply recommendations to the blueprint (default: false)"),
+  },
+  errorBoundary(async ({ blueprint_id, apply }) => {
+    const result = analyzeTuning(blueprint_id, apply ?? false);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.report, null, 2) }] };
+  }),
+);
+
+// ── Phase 14: Nectar Injection Tools ────────────────────────────────
+
+server.tool(
+  "hive_nectar_set",
+  "Manually set or override a nectar key on a swarm for debugging or intervention",
+  {
+    swarm_id: z.string().describe("The swarm ID"),
+    key: z.string().describe("The nectar key to set"),
+    value: z.string().describe("The value to set"),
+  },
+  errorBoundary(async ({ swarm_id, key, value }) => {
+    const result = setNectarKey(swarm_id, key, value);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.result, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_nectar_get",
+  "Get nectar values for a swarm — all keys or a single key",
+  {
+    swarm_id: z.string().describe("The swarm ID"),
+    key: z.string().optional().describe("Optional specific key to retrieve"),
+  },
+  errorBoundary(async ({ swarm_id, key }) => {
+    const result = getNectar(swarm_id, key);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.result, null, 2) }] };
+  }),
+);
+
+// ── Phase 14: Blueprint Versioning Tools ────────────────────────────
+
+server.tool(
+  "hive_blueprint_history",
+  "View the version history of a blueprint with install dates and change summaries",
+  {
+    blueprint_id: z.string().describe("The blueprint ID"),
+  },
+  errorBoundary(async ({ blueprint_id }) => {
+    const result = getBlueprintHistory(blueprint_id);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.versions, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_blueprint_diff",
+  "Show structural diff between two versions of a blueprint (bees/flights added, removed, changed)",
+  {
+    blueprint_id: z.string().describe("The blueprint ID"),
+    from_version: z.number().int().positive().optional().describe("Starting version number (defaults to second-to-last)"),
+    to_version: z.number().int().positive().optional().describe("Ending version number (defaults to latest)"),
+  },
+  errorBoundary(async ({ blueprint_id, from_version, to_version }) => {
+    const result = diffBlueprintVersions(blueprint_id, from_version, to_version);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.diff, null, 2) }] };
+  }),
+);
+
+// ── Phase 15: Budget Tools ───────────────────────────────────────────
+
+server.tool(
+  "hive_budget_set",
+  "Set or update the token budget for a swarm. Configurable action on exceed: warn (default), pause, or cancel.",
+  {
+    swarm_id: z.string().describe("The swarm ID"),
+    token_budget: z.number().int().min(0).describe("Token limit (0 = unlimited)"),
+    action: z.enum(["warn", "pause", "cancel"]).optional().describe("Action when budget exceeded (default: warn)"),
+  },
+  errorBoundary(async ({ swarm_id, token_budget, action }) => {
+    const result = setBudget(swarm_id, token_budget, action);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.result, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_budget_status",
+  "Check budget utilization, remaining tokens, and projected total for a swarm",
+  {
+    swarm_id: z.string().describe("The swarm ID"),
+  },
+  errorBoundary(async ({ swarm_id }) => {
+    const result = getBudgetStatus(swarm_id);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.status, null, 2) }] };
+  }),
+);
+
+// ── Phase 15: Cache Tools ───────────────────────────────────────────
+
+server.tool(
+  "hive_cache_status",
+  "View flight result cache statistics: entries, hit rate, TTL, and expired count",
+  {},
+  errorBoundary(async () => {
+    const stats = getCacheStatus();
+    return { content: [{ type: "text" as const, text: JSON.stringify(stats, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_cache_clear",
+  "Invalidate cached flight results. Clear all, by blueprint, or by specific flight.",
+  {
+    blueprint_id: z.string().optional().describe("Filter by blueprint ID"),
+    flight_id: z.string().optional().describe("Filter by flight ID (requires blueprint_id)"),
+  },
+  errorBoundary(async ({ blueprint_id, flight_id }) => {
+    const result = clearCache(blueprint_id, flight_id);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  }),
+);
+
+// ── Phase 15: Comparison Tools ──────────────────────────────────────
+
+server.tool(
+  "hive_swarm_compare",
+  "Compare two swarm runs side-by-side: flight outcomes, durations, nectar diffs, and token usage. Works with live swarms and archives.",
+  {
+    swarm_a: z.string().describe("First swarm ID or number"),
+    swarm_b: z.string().describe("Second swarm ID or number"),
+  },
+  errorBoundary(async ({ swarm_a, swarm_b }) => {
+    const result = compareSwarms(swarm_a, swarm_b);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: result.comparison.markdown + "\n\n---\n\n```json\n" + JSON.stringify(result.comparison, null, 2) + "\n```" }] };
+  }),
+);
+
+// ── Phase 15: Dynamic Pipeline Tools ────────────────────────────────
+
+server.tool(
+  "hive_flight_inject",
+  "Inject a new flight into a running pipeline after a specified flight. Safety guards prevent modifying completed or in-flight work.",
+  {
+    swarm_id: z.string().describe("The swarm ID"),
+    after_flight_id: z.string().describe("Insert after this flight ID"),
+    bee_id: z.string().describe("The bee ID to assign (e.g., feature-dev_worker)"),
+    input: z.string().describe("The input template for the injected flight"),
+    expects: z.string().optional().describe("Expected output format (default: STATUS: done)"),
+  },
+  errorBoundary(async ({ swarm_id, after_flight_id, bee_id, input, expects }) => {
+    const result = injectFlight(swarm_id, after_flight_id, bee_id, input, expects);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.result, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_flight_skip",
+  "Skip a pending or waiting flight, marking it done with SKIPPED output. Advances the pipeline.",
+  {
+    flight_id: z.string().describe("The flight UUID to skip"),
+    reason: z.string().optional().describe("Reason for skipping (default: manually skipped)"),
+  },
+  errorBoundary(async ({ flight_id, reason }) => {
+    const result = skipFlight(flight_id, reason);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.result, null, 2) }] };
+  }),
+);
+
+// ── Phase 15: Template Tools ────────────────────────────────────────
+
+server.tool(
+  "hive_template_save",
+  "Save a named swarm configuration as a reusable template. Stores blueprint, variables, priority, and description.",
+  {
+    name: z.string().describe("Unique template name"),
+    blueprint_id: z.string().describe("The blueprint ID to use"),
+    variables: z.record(z.string(), z.string()).optional().describe("Default input variables"),
+    priority: z.number().int().min(1).max(10).optional().describe("Default priority (1-10)"),
+    description: z.string().optional().describe("Template description"),
+  },
+  errorBoundary(async ({ name, blueprint_id, variables, priority, description }) => {
+    const result = saveTemplate(name, blueprint_id, description, variables, priority);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.result, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_template_list",
+  "List all saved swarm templates with usage counts",
+  {},
+  errorBoundary(async () => {
+    const result = listSavedTemplates();
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.templates, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_template_run",
+  "Start a swarm from a saved template with optional task and variable overrides",
+  {
+    template_name: z.string().describe("The template name to use"),
+    task: z.string().describe("The task description"),
+    variables: z.record(z.string(), z.string()).optional().describe("Variable overrides"),
+    priority: z.number().int().min(1).max(10).optional().describe("Priority override"),
+  },
+  errorBoundary(async ({ template_name, task, variables, priority }) => {
+    const result = runTemplate(template_name, task, variables, priority);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.result, null, 2) }] };
   }),
 );
 

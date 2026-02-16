@@ -18,6 +18,10 @@ import {
   checkQueuedSwarms,
   checkAutoArchive,
   checkMaintenance,
+  checkExpiredGates,
+  checkAdaptiveTuning,
+  checkBudgetOverruns,
+  checkExpiredCache,
 } from "./checks.js";
 import {
   resetStuckFlight,
@@ -30,6 +34,8 @@ import {
   retryWebhook,
   autoArchiveSwarm,
   autoMaintain,
+  resolveExpiredGate,
+  cleanExpiredCache,
 } from "./remediate.js";
 import { emitEvent } from "../lib/events.js";
 import type { CheckResult, BeekeeperReport, BlueprintSpec } from "../types.js";
@@ -64,6 +70,8 @@ const remediationMap: Record<string, (entityId: string) => { success: boolean }>
   promoteScheduledSwarm,
   autoArchiveSwarm,
   autoMaintain,
+  resolveExpiredGate,
+  cleanExpiredCache,
 };
 
 /**
@@ -83,6 +91,10 @@ export function runBeekeeperCheck(): BeekeeperReport {
     ...checkQueuedSwarms(),
     ...checkAutoArchive(),
     ...checkMaintenance(),
+    ...checkExpiredGates(),
+    ...checkAdaptiveTuning(),
+    ...checkBudgetOverruns(),
+    ...checkExpiredCache(),
   ];
 
   // Per-swarm checks (verification loops, stuck cells)

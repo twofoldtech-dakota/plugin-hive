@@ -2051,3 +2051,228 @@ Package blueprints as portable JSON bundles (`.hive-blueprint.json`).
 | `src/maintenance/janitor.test.ts` | Maintenance tests |
 | `src/blueprint/export.ts` | Blueprint export/import |
 | `src/blueprint/export.test.ts` | Export/import tests |
+
+---
+
+## Phase 14 — Estimation, Gate Policies, Adaptive Tuning, Nectar Injection & Blueprint Versioning
+
+Phase 14 adds pre-flight intelligence, extended gate capabilities, automated performance tuning, manual nectar intervention, and blueprint history tracking.
+
+### 14.1 Swarm Estimation (`src/estimate/estimate.ts`)
+
+Predict cost and duration before starting a swarm. Uses historical `bee_stats` data to project per-flight durations and token costs. For DAG blueprints, computes critical-path duration. Returns confidence scores based on data availability.
+
+### 14.2 Gate Policies (`src/flight/gate-policy.ts`)
+
+Extends the basic `gate: approval` mechanism with structured policies:
+- `auto_approve_when` — conditions under which gates auto-approve (e.g., `"{{test_status}} == pass"`)
+- `timeout_minutes` — auto-cancel or auto-approve after timeout
+- `timeout_action` — action on timeout: `approve`, `cancel`, or `block` (default)
+
+Gate policies are evaluated at promotion time. The beekeeper checks for expired gates.
+
+### 14.3 Adaptive Tuning (`src/adaptive/tune.ts`)
+
+Analyzes bee performance from `bee_stats` and recommends parameter adjustments:
+- Timeout increases for consistently slow bees
+- Retry increases for flaky bees
+- Model upgrades for low-success-rate bees
+- Confidence scoring based on sample size
+
+Optional `--apply` mode writes recommendations back to the blueprint YAML and records a new version.
+
+### 14.4 Nectar Injection (`src/nectar/inject.ts`)
+
+Manual set/override of nectar keys for debugging and intervention:
+- `hive_nectar_set` — writes a key-value pair into swarm nectar, bumps epoch
+- `hive_nectar_get` — reads nectar values (all or specific key)
+- Emits `nectar.injected` event with old/new values
+
+### 14.5 Blueprint Versioning (`src/blueprint/version.ts`)
+
+Tracks blueprint installation history in `blueprint_versions` table:
+- Records version number, changes summary, and full spec on each install
+- `hive_blueprint_history` — lists all versions with summaries
+- `hive_blueprint_diff` — structural diff between two versions (bees added/removed/changed, flights added/removed/changed)
+
+### 14.6 Schema Changes
+
+**New Tables:**
+- `blueprint_versions` (id, blueprint_id, version, spec, changes_summary, installed_at)
+
+**New Columns:**
+- `flights.gate_policy TEXT` — JSON gate policy config
+
+**New Config Keys (1):**
+- `adaptive_enabled` (boolean, default true) — enable adaptive tuning recommendations
+
+**New Events (1):** `nectar.injected`
+
+### 14.7 New MCP Tools
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `hive_swarm_estimate` | Predict cost/duration for a swarm | `blueprint_id` |
+| `hive_gate_list` | List pending gated flights with policies | — |
+| `hive_adaptive_tune` | Analyze and tune bee parameters | `blueprint_id, apply?` |
+| `hive_nectar_set` | Set a nectar key on a swarm | `swarm_id, key, value` |
+| `hive_nectar_get` | Get nectar values from a swarm | `swarm_id, key?` |
+| `hive_blueprint_history` | View blueprint version history | `blueprint_id` |
+| `hive_blueprint_diff` | Diff blueprint versions | `blueprint_id, from_version?, to_version?` |
+
+**Total MCP Tools:** 60 (49 from Phases 1-13 + 11 new)
+
+### 14.8 New Files
+
+| File | Purpose |
+|------|---------|
+| `src/estimate/estimate.ts` | Swarm cost/duration estimation |
+| `src/estimate/estimate.test.ts` | Estimation tests |
+| `src/flight/gate-policy.ts` | Extended gate policy evaluation |
+| `src/flight/gate-policy.test.ts` | Gate policy tests |
+| `src/adaptive/tune.ts` | Adaptive parameter tuning |
+| `src/adaptive/tune.test.ts` | Tuning tests |
+| `src/nectar/inject.ts` | Manual nectar injection |
+| `src/nectar/inject.test.ts` | Nectar injection tests |
+| `src/blueprint/version.ts` | Blueprint version tracking |
+| `src/blueprint/version.test.ts` | Version tests |
+
+---
+
+## Phase 15 — Guardrails, Caching & Runtime Flexibility
+
+Phase 15 adds production safety (token budgets), development velocity (flight caching), runtime flexibility (dynamic pipeline modification), swarm comparison for replay validation, and reusable templates for recurring workflows.
+
+### 15.1 Token Budgets & Guardrails (`src/budget/budget.ts`)
+
+Per-swarm token budget enforcement with configurable actions when exceeded.
+
+**Budget Lifecycle:**
+1. Set budget via `hive_budget_set` (token limit + action: warn/pause/cancel)
+2. After each flight completion, `checkBudget()` sums `flight_usage` tokens against budget
+3. At 80% utilization, emits `swarm.budget_warning` event
+4. When exceeded, takes configured action:
+   - `warn` — emits `swarm.budget_exceeded`, continues execution
+   - `pause` — pauses the swarm
+   - `cancel` — cancels the swarm
+
+**Beekeeper Integration:** `checkBudgetOverruns()` flags buzzing swarms that exceeded budget but only have `warn` action configured.
+
+### 15.2 Flight Result Caching (`src/cache/cache.ts`)
+
+Content-addressable memoization of flight outputs. Cache hits skip bee spawning entirely, dramatically reducing cost for repeated or replayed swarms.
+
+**Cache Key:** `(blueprint_id, flight_id, SHA-256(resolved_input))`
+
+**Cache Flow:**
+1. Before claiming a flight, compute input hash from resolved template
+2. Check `flight_cache` table for a matching non-expired entry
+3. On hit: mark flight as done with cached output, emit `flight.cache_hit`, skip bee spawn
+4. On miss: proceed normally; after completion, store result with configurable TTL
+
+**Global Config:**
+- `cache_enabled` (boolean, default false) — global toggle
+- `cache_ttl_hours` (number, default 24) — default TTL for cache entries
+
+**Beekeeper Integration:** `checkExpiredCache()` advisory check with `cleanExpiredCache` auto-remediation.
+
+### 15.3 Swarm Comparison (`src/compare/compare.ts`)
+
+Side-by-side analysis of two swarm runs. Works with both live swarms and archives.
+
+**Comparison Output:**
+- Swarm metadata (blueprint, task, status, timing)
+- Flight-by-flight status comparison (matched by flight_id)
+- Nectar diff (keys that differ between runs)
+- Duration and token usage totals
+- Structured markdown report
+
+Useful for replay validation and blueprint A/B testing. Exposed via Observatory at `/api/compare/:idA/:idB`.
+
+### 15.4 Dynamic Pipeline Operations (`src/pipeline/dynamic.ts`)
+
+Runtime modification of live pipelines without restarting swarms.
+
+**Flight Injection (`injectFlight`):**
+- Validates swarm is buzzing/paused/blocked (not completed/cancelled/failed)
+- Inserts new flight after specified `after_flight_id`
+- Sets status to `pending` (if after-flight is done) or `waiting` (otherwise)
+- Bumps epoch for coordinator detection
+- Emits `flight.injected` event
+
+**Flight Skip (`skipFlight`):**
+- Validates flight is pending or waiting (not in_flight or done)
+- Marks flight as `done` with output `SKIPPED: {reason}`
+- Calls `advancePipeline()` to progress the swarm
+- Emits `flight.skipped_manual` event
+
+### 15.5 Swarm Templates (`src/swarm/templates.ts`)
+
+Named reusable swarm configurations for recurring tasks.
+
+**Template CRUD:**
+- `saveTemplate(name, blueprintId, description?, variables?, priority?)` — validates blueprint exists, checks name uniqueness
+- `listSavedTemplates()` — returns all templates sorted by usage count
+- `deleteTemplateByName(name)` — removes template, emits `template.deleted`
+
+**Template Execution:**
+- `runTemplate(name, task, variableOverrides?, priorityOverride?)` — merges saved variables with overrides, calls `createSwarmFromBlueprint()`, increments usage counter
+
+### 15.6 Schema Changes
+
+**New Tables (2):**
+- `flight_cache` (id, blueprint_id, flight_id, input_hash, output, nectar_keys, created_at, expires_at, hit_count) — with unique constraint on `(blueprint_id, flight_id, input_hash)`
+- `swarm_templates` (id, name, blueprint_id, description, variables, priority, options, usage_count, created_at, updated_at)
+
+**New Columns (4):**
+- `swarms.token_budget INTEGER` — token limit (0 = unlimited)
+- `swarms.budget_action TEXT` — action on exceed: warn, pause, cancel
+- `flights.cache_key TEXT` — SHA-256 hash for cache lookup
+- `flights.cached INTEGER DEFAULT 0` — 1 if result was from cache
+
+**New Config Keys (4):**
+- `default_token_budget` (number, default 0) — default budget for new swarms
+- `default_budget_action` (string, default "warn") — default action when budget exceeded
+- `cache_enabled` (boolean, default false) — global flight result cache toggle
+- `cache_ttl_hours` (number, default 24) — default cache entry TTL
+
+**New Events (7):**
+- `swarm.budget_warning` — 80% of budget consumed
+- `swarm.budget_exceeded` — budget exceeded, action taken
+- `flight.cache_hit` — flight result served from cache
+- `flight.injected` — flight dynamically added to pipeline
+- `flight.skipped_manual` — flight manually skipped by user
+- `template.created` — template saved
+- `template.deleted` — template removed
+
+### 15.7 New MCP Tools
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `hive_budget_set` | Set/update token budget for a swarm | `swarm_id, token_budget, action?` |
+| `hive_budget_status` | Check budget utilization and projection | `swarm_id` |
+| `hive_cache_status` | View cache statistics (hit rate, entries) | — |
+| `hive_cache_clear` | Invalidate cached results | `blueprint_id?, flight_id?` |
+| `hive_swarm_compare` | Compare two swarm runs with markdown diff | `swarm_a, swarm_b` |
+| `hive_flight_inject` | Add a flight to a running pipeline | `swarm_id, after_flight_id, bee_id, input, expects?` |
+| `hive_flight_skip` | Skip a pending/waiting flight | `flight_id, reason?` |
+| `hive_template_save` | Save swarm configuration as named template | `name, blueprint_id, description?, variables?, priority?` |
+| `hive_template_list` | List saved templates | — |
+| `hive_template_run` | Start a swarm from a template | `template_name, task, variables?, priority?` |
+
+**Total MCP Tools:** 70 (60 from Phases 1-14 + 10 new)
+
+### 15.8 New Files
+
+| File | Purpose |
+|------|---------|
+| `src/budget/budget.ts` | Budget enforcement engine |
+| `src/budget/budget.test.ts` | Budget tests |
+| `src/cache/cache.ts` | Flight result caching |
+| `src/cache/cache.test.ts` | Cache tests |
+| `src/compare/compare.ts` | Swarm comparison engine |
+| `src/compare/compare.test.ts` | Comparison tests |
+| `src/pipeline/dynamic.ts` | Dynamic pipeline operations |
+| `src/pipeline/dynamic.test.ts` | Dynamic pipeline tests |
+| `src/swarm/templates.ts` | Swarm template CRUD |
+| `src/swarm/templates.test.ts` | Template tests |

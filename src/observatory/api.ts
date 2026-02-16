@@ -6,6 +6,9 @@ import { getStorageStatus } from "../archive/storage.js";
 import { generateSwarmReport } from "../report/generate.js";
 import { getChainStatus, listChains as listChainsQuery } from "../chain/status.js";
 import { getFleetMetrics } from "../metrics/fleet.js";
+import { getBudgetStatus } from "../budget/budget.js";
+import { getCacheStatus } from "../cache/cache.js";
+import { compareSwarms } from "../compare/compare.js";
 import type { SwarmStatus } from "../types.js";
 
 const VALID_SWARM_STATUSES = new Set<string>(["buzzing", "paused", "blocked", "completed", "failed", "cancelled", "scheduled", "queued"]);
@@ -262,6 +265,44 @@ export function handleRequest(req: IncomingMessage, res: ServerResponse): void {
         return;
       }
       json(res, result.metrics);
+      return;
+    }
+
+    // ── Phase 15: New API endpoints ───────────────────────────────────
+
+    // GET /api/cache
+    if (path === "/api/cache" && req.method === "GET") {
+      json(res, getCacheStatus());
+      return;
+    }
+
+    // GET /api/templates
+    if (path === "/api/templates" && req.method === "GET") {
+      json(res, db.listTemplates());
+      return;
+    }
+
+    // GET /api/swarms/:id/budget
+    const budgetMatch = path.match(/^\/api\/swarms\/([^/]+)\/budget$/);
+    if (budgetMatch && req.method === "GET") {
+      const result = getBudgetStatus(budgetMatch[1]);
+      if (!result.success) {
+        notFound(res, result.error);
+        return;
+      }
+      json(res, result.status);
+      return;
+    }
+
+    // GET /api/compare/:idA/:idB
+    const compareMatch = path.match(/^\/api\/compare\/([^/]+)\/([^/]+)$/);
+    if (compareMatch && req.method === "GET") {
+      const result = compareSwarms(compareMatch[1], compareMatch[2]);
+      if (!result.success) {
+        notFound(res, result.error);
+        return;
+      }
+      json(res, result.comparison);
       return;
     }
 

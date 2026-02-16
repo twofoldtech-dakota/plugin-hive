@@ -11,6 +11,7 @@ import { maybeAutoCheckpoint, checkpointOnTransition } from "../snapshot/checkpo
 import { trackUsage } from "../usage/track.js";
 import { updateBeeStats } from "../usage/bee-stats.js";
 import { checkProducedKeys } from "../nectar/contracts.js";
+import { checkBudget } from "../budget/budget.js";
 import type { LoopConfig, BlueprintSpec, FlightRecord } from "../types.js";
 
 export type CompleteFlightResult =
@@ -88,6 +89,7 @@ export function completeFlight(flightId: string, output: string): CompleteFlight
   insertTrace(flightId, flight.swarm_id, "output", { output_length: output.length, nectar_keys_produced: nectarKeysProduced });
   emitEvent({ eventType: "flight.completed", swarmId: flight.swarm_id, payload: { flight_id: flight.flight_id } });
   maybeAutoCheckpoint(flight.swarm_id);
+  checkBudget(flight.swarm_id);
   const advResult = advancePipeline(flight.swarm_id);
   if (advResult.action === "completed") {
     // Scheduler unregistration handled by caller / index.ts

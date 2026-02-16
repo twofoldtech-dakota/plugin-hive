@@ -37,6 +37,15 @@ export interface RetryStrategy {
   delay_seconds?: number;
 }
 
+export interface GatePolicy {
+  type: "approval";
+  auto_approve_when?: string;
+  timeout_minutes?: number;
+  on_timeout?: "approve" | "reject";
+}
+
+export type GateSpec = "approval" | GatePolicy;
+
 export interface FlightSpec {
   id: string;
   bee: string;
@@ -44,7 +53,7 @@ export interface FlightSpec {
   loop?: LoopConfig;
   depends_on?: string[];
   when?: string;
-  gate?: "approval";
+  gate?: GateSpec;
   retry_strategy?: RetryStrategy;
   produces?: string[];
   requires?: string[];
@@ -172,6 +181,7 @@ export interface FlightRecord {
   checkpoint_data: string | null; // JSON string of checkpoint data
   produces: string | null; // JSON array of nectar keys produced
   requires: string | null; // JSON array of nectar keys required
+  gated_at: string | null;
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
@@ -277,7 +287,18 @@ export type HiveEventType =
   | "swarm.queued"
   | "swarm.archived"
   | "swarm.replayed"
-  | "maintenance.completed";
+  | "maintenance.completed"
+  | "nectar.injected"
+  | "blueprint.versioned"
+  | "gate.auto_approved"
+  | "gate.timed_out"
+  | "swarm.budget_warning"
+  | "swarm.budget_exceeded"
+  | "flight.cache_hit"
+  | "flight.injected"
+  | "flight.skipped_manual"
+  | "template.created"
+  | "template.deleted";
 
 // ── Spawn Request (from pollinator) ─────────────────────────────────
 
@@ -543,4 +564,206 @@ export interface BlueprintBundle {
   exported_at: string;
   spec: BlueprintSpec;
   files: Record<string, string>; // relative path → base64 content
+}
+
+// ── Phase 14: Swarm Estimation ──────────────────────────────────────
+
+export interface FlightEstimate {
+  flight_id: string;
+  bee_id: string;
+  type: "single" | "loop";
+  estimated_duration_seconds: number;
+  estimated_tokens: number;
+  estimated_cells: number | null;
+  confidence: number;
+  data_points: number;
+}
+
+export interface SwarmEstimate {
+  blueprint_id: string;
+  total_estimated_duration_seconds: number;
+  total_estimated_tokens: number;
+  overall_confidence: number;
+  estimated_success_rate: number | null;
+  per_flight: FlightEstimate[];
+  historical_swarms_analyzed: number;
+  note: string | null;
+}
+
+// ── Phase 14: Adaptive Tuning ───────────────────────────────────────
+
+export interface TuningRecommendation {
+  bee_id: string;
+  parameter: string;
+  current_value: number;
+  recommended_value: number;
+  reasoning: string;
+  confidence: number;
+}
+
+export interface TuningReport {
+  blueprint_id: string;
+  recommendations: TuningRecommendation[];
+  analyzed_bees: number;
+  data_quality: "insufficient" | "limited" | "good" | "excellent";
+  applied: boolean;
+}
+
+// ── Phase 14: Blueprint Versioning ──────────────────────────────────
+
+export interface BlueprintVersionRecord {
+  id: string;
+  blueprint_id: string;
+  version_number: number;
+  spec: string;
+  changes_summary: string | null;
+  installed_at: string;
+}
+
+export interface BlueprintDiff {
+  from_version: number;
+  to_version: number;
+  bees_added: string[];
+  bees_removed: string[];
+  bees_changed: string[];
+  flights_added: string[];
+  flights_removed: string[];
+  flights_changed: string[];
+  other_changes: string[];
+}
+
+// ── Phase 15: Swarm Budgets ─────────────────────────────────────────
+
+export interface BudgetStatus {
+  swarm_id: string;
+  token_budget: number;
+  budget_action: "warn" | "pause" | "cancel";
+  consumed: number;
+  remaining: number;
+  utilization: number; // 0.0–1.0
+  exceeded: boolean;
+  projection: number | null; // projected total based on flight count
+}
+
+export interface BudgetSetResult {
+  swarm_id: string;
+  token_budget: number;
+  budget_action: string;
+  consumed: number;
+}
+
+// ── Phase 15: Flight Caching ────────────────────────────────────────
+
+export interface CacheEntry {
+  id: string;
+  blueprint_id: string;
+  flight_id: string;
+  input_hash: string;
+  output: string;
+  nectar_keys: string | null;
+  created_at: string;
+  expires_at: string;
+  hit_count: number;
+}
+
+export interface CacheStats {
+  entries: number;
+  total_hits: number;
+  enabled: boolean;
+  ttl_hours: number;
+  expired: number;
+}
+
+export interface CacheClearResult {
+  deleted: number;
+  scope: string;
+}
+
+// ── Phase 15: Swarm Comparison ──────────────────────────────────────
+
+export interface FlightComparison {
+  flight_id: string;
+  a_status: string;
+  b_status: string;
+  a_duration_seconds: number | null;
+  b_duration_seconds: number | null;
+  status_match: boolean;
+}
+
+export interface ComparisonSummary {
+  flights_match: number;
+  flights_differ: number;
+  a_total_duration: number;
+  b_total_duration: number;
+  a_total_tokens: number;
+  b_total_tokens: number;
+  nectar_diff_keys: string[];
+}
+
+export interface SwarmComparison {
+  swarm_a: { id: string; task: string; status: string; blueprint_id: string };
+  swarm_b: { id: string; task: string; status: string; blueprint_id: string };
+  flights: FlightComparison[];
+  summary: ComparisonSummary;
+  markdown: string;
+}
+
+// ── Phase 15: Dynamic Pipeline ──────────────────────────────────────
+
+export interface FlightInjectResult {
+  success: boolean;
+  flight_uuid: string;
+  flight_id: string;
+  flight_index: number;
+  message: string;
+}
+
+export interface FlightSkipResult {
+  success: boolean;
+  flight_id: string;
+  message: string;
+}
+
+// ── Phase 15: Swarm Templates ───────────────────────────────────────
+
+export interface SwarmTemplate {
+  id: string;
+  name: string;
+  blueprint_id: string;
+  description: string | null;
+  variables: string; // JSON
+  priority: number;
+  options: string; // JSON
+  usage_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TemplateSaveResult {
+  template: SwarmTemplate;
+  message: string;
+}
+
+export interface TemplateRunResult {
+  template_name: string;
+  swarm_id: string;
+  swarm_number: number;
+  status: string;
+}
+
+// ── Phase 14: Nectar Injection ──────────────────────────────────────
+
+export interface NectarSetResult {
+  swarm_id: string;
+  key: string;
+  value: string;
+  old_value: string | null;
+  epoch: number;
+}
+
+export interface NectarGetResult {
+  swarm_id: string;
+  nectar: Record<string, string>;
+  key?: string;
+  value?: string;
 }

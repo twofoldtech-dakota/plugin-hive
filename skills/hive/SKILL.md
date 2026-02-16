@@ -1,7 +1,7 @@
 ---
 name: hive
 description: "Manage Plugin Hive swarms, blueprints, and bees"
-allowed-tools: Read, Grep, Glob, mcp__hive__hive_blueprint_list, mcp__hive__hive_blueprint_install, mcp__hive__hive_blueprint_uninstall, mcp__hive__hive_blueprint_info, mcp__hive__hive_blueprint_scaffold, mcp__hive__hive_blueprint_validate, mcp__hive__hive_blueprint_dryrun, mcp__hive__hive_blueprint_install_remote, mcp__hive__hive_blueprint_export, mcp__hive__hive_blueprint_import, mcp__hive__hive_swarm_start, mcp__hive__hive_swarm_status, mcp__hive__hive_swarm_list, mcp__hive__hive_swarm_stop, mcp__hive__hive_swarm_resume, mcp__hive__hive_swarm_replay, mcp__hive__hive_swarm_analytics, mcp__hive__hive_swarm_usage, mcp__hive__hive_swarm_archive, mcp__hive__hive_swarm_report, mcp__hive__hive_flight_peek, mcp__hive__hive_flight_claim, mcp__hive__hive_flight_complete, mcp__hive__hive_flight_fail, mcp__hive__hive_flight_trace, mcp__hive__hive_flight_pulse, mcp__hive__hive_flight_progress, mcp__hive__hive_gate_approve, mcp__hive__hive_pollinate, mcp__hive__hive_cell_list, mcp__hive__hive_beekeeper_check, mcp__hive__hive_beekeeper_status, mcp__hive__hive_bee_stats, mcp__hive__hive_snapshot_create, mcp__hive__hive_snapshot_list, mcp__hive__hive_snapshot_restore, mcp__hive__hive_checkpoint_create, mcp__hive__hive_chain_status, mcp__hive__hive_chain_list, mcp__hive__hive_notification_config, mcp__hive__hive_notification_test, mcp__hive__hive_notification_history, mcp__hive__hive_notification_retry, mcp__hive__hive_observatory_start, mcp__hive__hive_observatory_stop, mcp__hive__hive_observatory_status, mcp__hive__hive_queue_status, mcp__hive__hive_storage_status, mcp__hive__hive_config, mcp__hive__hive_fleet_metrics, mcp__hive__hive_maintain
+allowed-tools: Read, Grep, Glob, mcp__hive__hive_blueprint_list, mcp__hive__hive_blueprint_install, mcp__hive__hive_blueprint_uninstall, mcp__hive__hive_blueprint_info, mcp__hive__hive_blueprint_scaffold, mcp__hive__hive_blueprint_validate, mcp__hive__hive_blueprint_dryrun, mcp__hive__hive_blueprint_install_remote, mcp__hive__hive_blueprint_export, mcp__hive__hive_blueprint_import, mcp__hive__hive_blueprint_history, mcp__hive__hive_blueprint_diff, mcp__hive__hive_swarm_start, mcp__hive__hive_swarm_status, mcp__hive__hive_swarm_list, mcp__hive__hive_swarm_stop, mcp__hive__hive_swarm_resume, mcp__hive__hive_swarm_replay, mcp__hive__hive_swarm_analytics, mcp__hive__hive_swarm_usage, mcp__hive__hive_swarm_archive, mcp__hive__hive_swarm_report, mcp__hive__hive_swarm_estimate, mcp__hive__hive_swarm_compare, mcp__hive__hive_flight_peek, mcp__hive__hive_flight_claim, mcp__hive__hive_flight_complete, mcp__hive__hive_flight_fail, mcp__hive__hive_flight_trace, mcp__hive__hive_flight_pulse, mcp__hive__hive_flight_progress, mcp__hive__hive_flight_inject, mcp__hive__hive_flight_skip, mcp__hive__hive_gate_approve, mcp__hive__hive_gate_list, mcp__hive__hive_pollinate, mcp__hive__hive_cell_list, mcp__hive__hive_beekeeper_check, mcp__hive__hive_beekeeper_status, mcp__hive__hive_bee_stats, mcp__hive__hive_snapshot_create, mcp__hive__hive_snapshot_list, mcp__hive__hive_snapshot_restore, mcp__hive__hive_checkpoint_create, mcp__hive__hive_chain_status, mcp__hive__hive_chain_list, mcp__hive__hive_notification_config, mcp__hive__hive_notification_test, mcp__hive__hive_notification_history, mcp__hive__hive_notification_retry, mcp__hive__hive_observatory_start, mcp__hive__hive_observatory_stop, mcp__hive__hive_observatory_status, mcp__hive__hive_queue_status, mcp__hive__hive_storage_status, mcp__hive__hive_config, mcp__hive__hive_fleet_metrics, mcp__hive__hive_maintain, mcp__hive__hive_adaptive_tune, mcp__hive__hive_nectar_set, mcp__hive__hive_nectar_get, mcp__hive__hive_budget_set, mcp__hive__hive_budget_status, mcp__hive__hive_cache_status, mcp__hive__hive_cache_clear, mcp__hive__hive_template_save, mcp__hive__hive_template_list, mcp__hive__hive_template_run
 ---
 
 # /hive — Plugin Hive Management
@@ -59,6 +59,21 @@ Parse the first word of `$ARGUMENTS` as the sub-command. If no arguments are giv
 | `maintain [--dry-run]` | Run data maintenance cleanup (see **maintain**) |
 | `export <blueprint_id> [output_dir]` | Export a blueprint as portable bundle (see **export**) |
 | `import <path>` | Import a blueprint from a bundle file (see **import**) |
+| `estimate <blueprint_id>` | Predict swarm cost/duration (see **estimate**) |
+| `gates` | List pending gated flights (see **gates**) |
+| `tune <blueprint_id> [--apply]` | Analyze and tune bee parameters (see **tune**) |
+| `nectar set <N> <key> <value>` | Set a nectar key on a swarm (see **nectar set**) |
+| `nectar get <N> [key]` | Get nectar values from a swarm (see **nectar get**) |
+| `history <blueprint_id>` | View blueprint version history (see **history**) |
+| `diff <blueprint_id> [from] [to]` | Diff blueprint versions (see **diff**) |
+| `budget <number\|id> [amount]` | View/set token budget for a swarm (see **budget**) |
+| `cache [clear]` | View cache stats or clear cache (see **cache**) |
+| `compare <N> <M>` | Compare two swarm runs side-by-side (see **compare**) |
+| `inject <N> <after_flight_id> <bee_id> <input>` | Inject a flight into a running pipeline (see **inject**) |
+| `skip <flight_id> [reason]` | Skip a pending/waiting flight (see **skip**) |
+| `template save <name> <blueprint_id>` | Save a swarm template (see **template save**) |
+| `template list` | List saved templates (see **template list**) |
+| `template run <name> <task>` | Start a swarm from a template (see **template run**) |
 
 ---
 
@@ -383,7 +398,7 @@ Get or set global configuration.
 1. If no arguments, call `mcp__hive__hive_config` with no params to show all config entries with descriptions.
 2. If a key is given but no value, call `mcp__hive__hive_config` with just the key to show that entry.
 3. If both key and value are given, call `mcp__hive__hive_config` with key and value to update it.
-4. Valid keys: `max_concurrent_swarms`, `max_flights_per_bee`, `retention_days`, `auto_archive`, `default_priority`, `event_retention_days`, `trace_retention_days`, `check_retention_days`, `webhook_retention_days`, `auto_maintain`.
+4. Valid keys: `max_concurrent_swarms`, `max_flights_per_bee`, `retention_days`, `auto_archive`, `default_priority`, `event_retention_days`, `trace_retention_days`, `check_retention_days`, `webhook_retention_days`, `auto_maintain`, `adaptive_enabled`, `default_token_budget`, `default_budget_action`, `cache_enabled`, `cache_ttl_hours`.
 
 ### replay
 
@@ -428,6 +443,148 @@ Import a blueprint from a .hive-blueprint.json bundle file.
 1. The argument is the file path.
 2. Call `mcp__hive__hive_blueprint_import` with the path.
 3. Report success with the imported blueprint ID.
+
+### estimate
+
+Predict cost and duration for a swarm before starting it.
+
+1. The argument is the blueprint ID.
+2. Call `mcp__hive__hive_swarm_estimate` with the blueprint_id.
+3. Display: total estimated duration, total tokens, confidence score, success rate, and per-flight breakdown.
+
+### gates
+
+List all pending gated flights with policy details and timeout countdowns.
+
+1. Call `mcp__hive__hive_gate_list` with no params.
+2. Format as a table: `flight_id | swarm_id | bee_id | policy | gated_at | timeout remaining`.
+
+### tune
+
+Analyze bee performance and recommend parameter adjustments.
+
+1. The argument is the blueprint ID.
+2. If `--apply` is given, set apply=true.
+3. Call `mcp__hive__hive_adaptive_tune` with the blueprint_id and apply flag.
+4. Display recommendations: parameter, current value, recommended value, reasoning, confidence.
+5. If applied, confirm that the blueprint was updated and a new version was recorded.
+
+### nectar set
+
+Manually set or override a nectar key on a swarm.
+
+1. The first argument is the swarm number or ID.
+2. **Number resolution:** If the argument is a short number, call `mcp__hive__hive_swarm_status` with it first to resolve the full swarm ID.
+3. The second argument is the key, the third is the value.
+4. Call `mcp__hive__hive_nectar_set` with swarm_id, key, and value.
+5. Report the old value (if any) and the new epoch.
+
+### nectar get
+
+Get nectar values from a swarm.
+
+1. The first argument is the swarm number or ID.
+2. **Number resolution:** If the argument is a short number, call `mcp__hive__hive_swarm_status` with it first to resolve the full swarm ID.
+3. The second argument (optional) is a specific key.
+4. Call `mcp__hive__hive_nectar_get` with swarm_id and optional key.
+5. Display nectar as a key-value table.
+
+### history
+
+View blueprint version history.
+
+1. The argument is the blueprint ID.
+2. Call `mcp__hive__hive_blueprint_history` with the blueprint_id.
+3. Format as a table: `version | changes_summary | installed_at`.
+
+### diff
+
+Show structural diff between two versions of a blueprint.
+
+1. The first argument is the blueprint ID.
+2. Optional second and third arguments are from_version and to_version numbers.
+3. Call `mcp__hive__hive_blueprint_diff` with blueprint_id and optional version numbers.
+4. Display: bees added/removed/changed, flights added/removed/changed, and other changes.
+
+### budget
+
+View or set token budget for a swarm.
+
+1. The first argument is the swarm number or ID.
+2. **Number resolution:** If the argument is a short number, call `mcp__hive__hive_swarm_status` with it first to resolve the full swarm ID.
+3. If a second argument (amount) is given, call `mcp__hive__hive_budget_set` with the resolved swarm ID and token_budget.
+   - Parse optional `--action=X` flag (warn, pause, cancel). Default is "warn".
+4. If no amount given, call `mcp__hive__hive_budget_status` with the resolved swarm ID.
+5. Display: consumed tokens, remaining budget, utilization percentage, projection, and configured action.
+
+### cache
+
+View cache statistics or clear the cache.
+
+1. If no arguments, call `mcp__hive__hive_cache_status`.
+2. Display: enabled state, total entries, hit count, miss count, hit rate, and TTL.
+3. If the argument is `clear`, call `mcp__hive__hive_cache_clear`.
+   - Parse optional `--blueprint=X` and `--flight=X` flags to scope the clear.
+4. Report how many entries were deleted and the scope.
+
+### compare
+
+Compare two swarm runs side-by-side.
+
+1. The first argument is swarm A (number or ID). The second argument is swarm B (number or ID).
+2. Call `mcp__hive__hive_swarm_compare` with both identifiers.
+3. Display the markdown comparison report showing: swarm metadata, flight-by-flight status comparison, nectar diffs, duration differences, and token usage differences.
+
+### inject
+
+Inject a flight into a running pipeline.
+
+1. The first argument is the swarm number or ID.
+2. **Number resolution:** If the argument is a short number, call `mcp__hive__hive_swarm_status` with it first to resolve the full swarm ID.
+3. The second argument is the after_flight_id (the flight_id after which to insert).
+4. The third argument is the bee_id.
+5. Remaining arguments are the input text for the flight.
+6. Parse optional `--expects=X` flag.
+7. Call `mcp__hive__hive_flight_inject` with swarm_id, after_flight_id, bee_id, input, and optional expects.
+8. Report the injected flight ID and its initial status.
+
+### skip
+
+Skip a pending or waiting flight.
+
+1. The argument is the flight UUID.
+2. Parse optional reason after the flight ID.
+3. Call `mcp__hive__hive_flight_skip` with flight_id and optional reason.
+4. Report the result and note that the pipeline will advance automatically.
+
+### template save
+
+Save a swarm configuration as a named template.
+
+1. The first argument is the template name.
+2. The second argument is the blueprint ID.
+3. Parse optional flags: `--description="..."`, `--priority=N`, `--variables=key=val,key2=val2`.
+4. Call `mcp__hive__hive_template_save` with name, blueprint_id, and optional description, priority, variables.
+5. Report the saved template name and configuration.
+
+### template list
+
+List all saved swarm templates.
+
+1. Call `mcp__hive__hive_template_list`.
+2. Format as a table: `name | blueprint_id | description | priority | usage_count | created_at`.
+
+### template run
+
+Start a swarm from a saved template.
+
+1. The first argument is the template name.
+2. Remaining arguments are the task description.
+3. Parse optional flags: `--priority=N`, `--variables=key=val,key2=val2`.
+4. Call `mcp__hive__hive_template_run` with template_name, task, and optional priority/variable overrides.
+5. Report the new swarm number and template used.
+6. Immediately call `mcp__hive__hive_pollinate` with the returned swarm_id to kick off work.
+7. Suggest: "Use `/hive-drive` to run this swarm autonomously."
 
 ---
 

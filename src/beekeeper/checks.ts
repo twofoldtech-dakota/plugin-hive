@@ -201,6 +201,72 @@ export function checkLowPerformanceBees(): CheckResult[] {
   }));
 }
 
+// ── Phase 14: Gate & Adaptive Checks ────────────────────────────────
+
+/**
+ * Check for gated flights that have exceeded their timeout_minutes.
+ */
+export function checkExpiredGates(): CheckResult[] {
+  const gated = db.getGatedFlightsAll();
+  const results: CheckResult[] = [];
+
+  for (const f of gated) {
+    if (!f.gate || !f.gated_at) continue;
+    let policy;
+    try {
+      policy = typeof f.gate === "string" && f.gate !== "approval" ? JSON.parse(f.gate) : null;
+    } catch {
+      continue;
+    }
+    if (!policy || !policy.timeout_minutes) continue;
+
+    const gatedTime = new Date(f.gated_at.replace(" ", "T") + "Z").getTime();
+    const elapsedMinutes = (Date.now() - gatedTime) / (1000 * 60);
+    if (elapsedMinutes >= policy.timeout_minutes) {
+      results.push({
+        issue: `Flight "${f.flight_id}" gate expired (${Math.round(elapsedMinutes)}/${policy.timeout_minutes} min)`,
+        severity: "critical" as const,
+        entity_type: "flight" as const,
+        entity_id: f.id,
+        remediation: "resolveExpiredGate",
+      });
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Advisory check: if adaptive tuning is enabled and sufficient data exists,
+ * flag when recommendations are available.
+ */
+export function checkAdaptiveTuning(): CheckResult[] {
+  const enabled = getConfigBoolean("adaptive_enabled", false);
+  if (!enabled) return [];
+
+  const blueprints = db.listBlueprints();
+  const results: CheckResult[] = [];
+
+  for (const bp of blueprints) {
+    const completedCount = db.getCompletedSwarmCount(bp.id);
+    if (completedCount < 10) continue;
+
+    const beeStats = db.getBeeStatsForBlueprint(bp.id);
+    const hasEnoughData = beeStats.some(s => s.total_flights >= 5);
+    if (!hasEnoughData) continue;
+
+    results.push({
+      issue: `Blueprint "${bp.id}" has tuning recommendations available (${completedCount} swarms analyzed)`,
+      severity: "warning" as const,
+      entity_type: "swarm" as const,
+      entity_id: bp.id,
+      // Advisory only — no automatic remediation
+    });
+  }
+
+  return results;
+}
+
 // ── Phase 12: Queue & Archive Checks ─────────────────────────────────
 
 /**
@@ -248,6 +314,36 @@ export function checkMaintenance(): CheckResult[] {
     entity_type: "swarm" as const,
     entity_id: "maintenance",
     remediation: "autoMaintain",
+  }];
+}
+
+/**
+ * Check for buzzing swarms that exceeded budget but action=warn (advisory).
+ */
+export function checkBudgetOverruns(): CheckResult[] {
+  const overruns = db.getBudgetExceededSwarms();
+  return overruns.map((s) => ({
+    issue: `Swarm #${s.swarm_number} exceeded token budget (${s.consumed}/${s.token_budget}) with action=warn`,
+    severity: "warning" as const,
+    entity_type: "swarm" as const,
+    entity_id: s.id,
+    // Advisory only — warn action means no automatic remediation
+  }));
+}
+
+/**
+ * Advisory check: flag expired cache entries for cleanup.
+ */
+export function checkExpiredCache(): CheckResult[] {
+  const stats = db.getCacheStats();
+  if (stats.expired === 0) return [];
+
+  return [{
+    issue: `${stats.expired} expired cache entries need cleanup`,
+    severity: "warning" as const,
+    entity_type: "swarm" as const,
+    entity_id: "cache",
+    remediation: "cleanExpiredCache",
   }];
 }
 

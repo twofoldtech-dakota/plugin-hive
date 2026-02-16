@@ -3,9 +3,11 @@ import { emitEvent } from "../lib/events.js";
 import { logger } from "../lib/logger.js";
 import { safeJsonParse } from "../lib/json.js";
 import { evaluateWhen } from "../flight/when.js";
+import { parseGateSpec, resolveGatePolicy, shouldAutoApprove } from "../flight/gate-policy.js";
 import { checkAndFireTriggers } from "../chain/trigger.js";
 import { checkpointOnTransition } from "../snapshot/checkpoint.js";
 import { promoteQueuedSwarms } from "../concurrency/enforce.js";
+import { nowUtc } from "../lib/time.js";
 import type { AdvanceResult, FlightRecord } from "../types.js";
 
 /**
@@ -79,8 +81,25 @@ function promoteOrGate(flight: FlightRecord, swarmId: string): "promoted" | "ski
   }
 
   // Check gate
-  if (flight.gate === "approval") {
-    db.updateFlight(flight.id, { status: "gated" });
+  if (flight.gate) {
+    const gateSpec = parseGateSpec(flight.gate);
+    const policy = resolveGatePolicy(gateSpec);
+
+    // Check auto-approve condition
+    if (policy.auto_approve_when) {
+      const swarm = db.getSwarm(swarmId);
+      const nectar = swarm ? safeJsonParse<Record<string, string>>(swarm.nectar, {}) : {};
+      if (shouldAutoApprove(policy, nectar)) {
+        // Auto-approve: skip gated, promote directly
+        db.updateFlight(flight.id, { status: "pending" });
+        emitEvent({ eventType: "gate.auto_approved", swarmId, payload: { flight_id: flight.flight_id, condition: policy.auto_approve_when } });
+        logger.info("Flight gate auto-approved", { flightId: flight.flight_id, condition: policy.auto_approve_when });
+        return "promoted";
+      }
+    }
+
+    // Enter gated status with timestamp
+    db.updateFlight(flight.id, { status: "gated", gated_at: nowUtc() });
     emitEvent({ eventType: "flight.gated", swarmId, payload: { flight_id: flight.flight_id, gate: flight.gate } });
     logger.info("Flight gated", { flightId: flight.flight_id, gate: flight.gate });
     return "gated";

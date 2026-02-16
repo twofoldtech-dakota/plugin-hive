@@ -56,6 +56,21 @@ Multi-agent swarm orchestration for Claude Code. Deploy specialized bees to auto
 | `/hive maintain [--dry-run]` | Run data maintenance cleanup |
 | `/hive export <id> [dir]` | Export blueprint as portable bundle |
 | `/hive import <path>` | Import blueprint from bundle file |
+| `/hive estimate <id>` | Predict swarm cost/duration before starting |
+| `/hive gates` | List pending gated flights with policies |
+| `/hive tune <id> [--apply]` | Analyze and tune bee parameters |
+| `/hive nectar set <N> <key> <value>` | Manually set a nectar key |
+| `/hive nectar get <N> [key]` | Get nectar values from a swarm |
+| `/hive history <id>` | View blueprint version history |
+| `/hive diff <id> [from] [to]` | Diff blueprint versions |
+| `/hive budget <N> [amount]` | View/set token budget for swarm #N |
+| `/hive cache [clear]` | View cache stats or clear cache |
+| `/hive compare <N> <M>` | Compare two swarm runs side-by-side |
+| `/hive inject <N> <after> <bee> <input>` | Inject a flight into a running pipeline |
+| `/hive skip <flight_id> [reason]` | Skip a pending/waiting flight |
+| `/hive template save <name> <bp>` | Save a swarm template |
+| `/hive template list` | List saved templates |
+| `/hive template run <name> <task>` | Start swarm from a saved template |
 | `/hive-drive <bp> <task>` | Autonomously drive a swarm start-to-finish |
 | `/hive-drive <N>` | Resume driving an existing buzzing swarm |
 
@@ -96,11 +111,21 @@ Multi-agent swarm orchestration for Claude Code. Deploy specialized bees to auto
 | **Maintenance** | Automated cleanup of old events, traces, checks, and webhook data |
 | **Fleet Metrics** | Aggregate statistics across all swarms over a time window |
 | **Blueprint Bundle** | Portable JSON package for sharing blueprints (`.hive-blueprint.json`) |
+| **Estimation** | Pre-flight cost/duration prediction using historical bee_stats data |
+| **Gate Policy** | Extended gate config with auto-approve conditions and timeouts |
+| **Adaptive Tuning** | Automated analysis of bee performance with parameter recommendations |
+| **Nectar Injection** | Manual override of nectar values for debugging and intervention |
+| **Blueprint Version** | Tracked installation history with structural diffs between versions |
+| **Budget** | Token consumption limit per swarm with configurable action (warn/pause/cancel) |
+| **Flight Cache** | Content-addressable memoization of flight outputs keyed on input hash |
+| **Swarm Comparison** | Side-by-side analysis of two swarm runs (flights, nectar, timing, tokens) |
+| **Dynamic Pipeline** | Runtime modification of live pipelines (inject/skip flights) |
+| **Swarm Template** | Named reusable swarm configuration (blueprint, variables, priority) |
 
 ## Architecture
 
-- **MCP Server** provides 49 tools (`hive_*`) for swarm orchestration
-- **SQLite DB** at `~/.plugin-hive/hive.db` stores all state (includes `hive_config` and `swarm_archives` tables)
+- **MCP Server** provides 70 tools (`hive_*`) for swarm orchestration
+- **SQLite DB** at `~/.plugin-hive/hive.db` stores all state (includes `hive_config`, `swarm_archives`, `blueprint_versions`, `flight_cache`, and `swarm_templates` tables)
 - **Flight pipeline** advances automatically as bees complete work
 - **Conditional flights** (`when:`) skip flights based on nectar values
 - **Flight gates** (`gate: approval`) pause for human confirmation
@@ -127,6 +152,16 @@ Multi-agent swarm orchestration for Claude Code. Deploy specialized bees to auto
 - **Fleet metrics** aggregates success rates, durations, trends, and top bees across time windows
 - **Data maintenance** cleans old events, traces, checks, webhooks, and orphaned pulses; respects retention config
 - **Blueprint export/import** packages blueprints as portable `.hive-blueprint.json` bundles with base64 files
+- **Swarm estimation** predicts cost/duration using historical bee_stats; supports DAG critical-path analysis
+- **Gate policies** extend gates with auto-approve conditions (`auto_approve_when`) and timeouts (`timeout_minutes`)
+- **Adaptive tuning** analyzes bee performance and recommends timeout/retry adjustments; optional apply mode
+- **Nectar injection** allows manual set/override of nectar keys for debugging and intervention
+- **Blueprint versioning** tracks install history in `blueprint_versions` table with structural diffs
+- **Token budgets** enforce per-swarm consumption limits with configurable actions (warn/pause/cancel)
+- **Flight caching** memoizes flight outputs by input hash; cache hits skip bee spawning entirely
+- **Swarm comparison** produces side-by-side analysis of two runs (flights, nectar, timing, tokens)
+- **Dynamic pipelines** allow runtime injection of new flights and manual skipping of pending flights
+- **Swarm templates** save named configurations for recurring tasks with variable/priority overrides
 
 ## Workflow
 

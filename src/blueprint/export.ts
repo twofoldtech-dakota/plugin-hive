@@ -5,6 +5,7 @@ import { blueprintDir, blueprintsDir, ensureDir } from "../lib/paths.js";
 import { bundledBlueprintsDir, projectBlueprintsDir } from "../lib/paths.js";
 import * as db from "../db.js";
 import { logger } from "../lib/logger.js";
+import { recordVersion } from "./version.js";
 import type { BlueprintBundle, BlueprintSpec } from "../types.js";
 
 // ── Export ────────────────────────────────────────────────────────────
@@ -110,6 +111,7 @@ export function importBlueprint(path: string): ImportResult {
   // Install to database
   const spec = loadResult.blueprint;
   db.insertBlueprint(spec.id, spec.name ?? null, spec.version ?? null, JSON.stringify(spec));
+  recordVersion(spec.id, spec);
 
   // Record source
   db.insertBlueprintSource(spec.id, "package", path);

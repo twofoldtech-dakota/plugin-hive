@@ -3,6 +3,7 @@ import { emitEvent } from "../lib/events.js";
 import { logger } from "../lib/logger.js";
 import { validateInputs } from "../blueprint/info.js";
 import { checkConcurrency } from "../concurrency/enforce.js";
+import { serializeGateSpec } from "../flight/gate-policy.js";
 import type { BlueprintSpec, FlightSpec } from "../types.js";
 
 export type CreateSwarmResult =
@@ -107,7 +108,7 @@ export function createSwarmFromBlueprint(blueprintId: string, task: string, vari
       flight.loop ? JSON.stringify(flight.loop) : undefined,
       flight.depends_on,
       flight.when,
-      flight.gate,
+      flight.gate ? serializeGateSpec(flight.gate) : undefined,
       flight.retry_strategy ? JSON.stringify(flight.retry_strategy) : undefined,
       flight.produces,
       flight.requires,

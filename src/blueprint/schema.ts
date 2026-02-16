@@ -46,7 +46,15 @@ const FlightSpecSchema = z.object({
   loop: LoopConfigSchema.optional(),
   depends_on: z.array(z.string().min(1)).optional(),
   when: z.string().optional(),
-  gate: z.enum(["approval"]).optional(),
+  gate: z.union([
+    z.literal("approval"),
+    z.object({
+      type: z.literal("approval"),
+      auto_approve_when: z.string().optional(),
+      timeout_minutes: z.number().positive().optional(),
+      on_timeout: z.enum(["approve", "reject"]).optional(),
+    }),
+  ]).optional(),
   retry_strategy: RetryStrategySchema.optional(),
   produces: z.array(z.string().min(1)).optional(),
   requires: z.array(z.string().min(1)).optional(),

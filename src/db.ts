@@ -24,6 +24,9 @@ import type {
   HiveConfigRecord,
   SwarmArchiveRecord,
   MaintenanceResult,
+  BlueprintVersionRecord,
+  CacheEntry,
+  SwarmTemplate,
 } from "./types.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -407,6 +410,86 @@ function migrate(db: DatabaseSync): void {
     INSERT OR IGNORE INTO hive_config (key, value) VALUES ('webhook_retention_days', '14');
     INSERT OR IGNORE INTO hive_config (key, value) VALUES ('auto_maintain', 'false');
   `);
+
+  // Phase 14 — gated_at column on flights
+  if (!cols.some(c => c.name === "gated_at")) {
+    db.exec("ALTER TABLE flights ADD COLUMN gated_at TEXT");
+  }
+
+  // Phase 14 — blueprint_versions table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS blueprint_versions (
+      id TEXT PRIMARY KEY,
+      blueprint_id TEXT NOT NULL,
+      version_number INTEGER NOT NULL,
+      spec TEXT NOT NULL,
+      changes_summary TEXT,
+      installed_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_blueprint_versions_bp ON blueprint_versions(blueprint_id, version_number);
+  `);
+
+  // Phase 14 — adaptive_enabled config
+  db.exec(`
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('adaptive_enabled', 'false');
+  `);
+
+  // Phase 15 — new tables
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS flight_cache (
+      id TEXT PRIMARY KEY,
+      blueprint_id TEXT NOT NULL,
+      flight_id TEXT NOT NULL,
+      input_hash TEXT NOT NULL,
+      output TEXT NOT NULL,
+      nectar_keys TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      expires_at TEXT NOT NULL,
+      hit_count INTEGER DEFAULT 0,
+      UNIQUE(blueprint_id, flight_id, input_hash)
+    );
+    CREATE INDEX IF NOT EXISTS idx_flight_cache_lookup
+      ON flight_cache(blueprint_id, flight_id, input_hash);
+
+    CREATE TABLE IF NOT EXISTS swarm_templates (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      blueprint_id TEXT NOT NULL,
+      description TEXT,
+      variables TEXT DEFAULT '{}',
+      priority INTEGER DEFAULT 5,
+      options TEXT DEFAULT '{}',
+      usage_count INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+  `);
+
+  // Phase 15 — new columns on swarms
+  const swarmCols15 = db.prepare("PRAGMA table_info(swarms)").all() as Array<{ name: string }>;
+  if (!swarmCols15.some(c => c.name === "token_budget")) {
+    db.exec("ALTER TABLE swarms ADD COLUMN token_budget INTEGER DEFAULT 0");
+  }
+  if (!swarmCols15.some(c => c.name === "budget_action")) {
+    db.exec("ALTER TABLE swarms ADD COLUMN budget_action TEXT DEFAULT 'warn'");
+  }
+
+  // Phase 15 — new columns on flights
+  const flightCols15 = db.prepare("PRAGMA table_info(flights)").all() as Array<{ name: string }>;
+  if (!flightCols15.some(c => c.name === "cache_key")) {
+    db.exec("ALTER TABLE flights ADD COLUMN cache_key TEXT");
+  }
+  if (!flightCols15.some(c => c.name === "cached")) {
+    db.exec("ALTER TABLE flights ADD COLUMN cached INTEGER DEFAULT 0");
+  }
+
+  // Phase 15 — seed config
+  db.exec(`
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('default_token_budget', '0');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('default_budget_action', 'warn');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('cache_enabled', 'false');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('cache_ttl_hours', '24');
+  `);
 }
 
 // ── Blueprints ───────────────────────────────────────────────────────
@@ -671,7 +754,7 @@ export function updateFlight(
   updates: Partial<
     Pick<
       FlightRecord,
-      "status" | "output" | "retry_count" | "current_cell_id" | "abandoned_count" | "verify_meta" | "started_at" | "completed_at" | "retry_at" | "error_context" | "checkpoint_data"
+      "status" | "output" | "retry_count" | "current_cell_id" | "abandoned_count" | "verify_meta" | "started_at" | "completed_at" | "retry_at" | "error_context" | "checkpoint_data" | "gated_at"
     >
   >,
 ): void {
@@ -722,6 +805,10 @@ export function updateFlight(
   if (updates.checkpoint_data !== undefined) {
     sets.push("checkpoint_data = ?");
     params.push(updates.checkpoint_data);
+  }
+  if (updates.gated_at !== undefined) {
+    sets.push("gated_at = ?");
+    params.push(updates.gated_at);
   }
 
   params.push(id);
@@ -1699,6 +1786,227 @@ export function setMetaValue(key: string, value: string): void {
     `INSERT INTO hive_meta (key, value) VALUES (?, ?)
      ON CONFLICT(key) DO UPDATE SET value = ?`,
   ).run(key, value, value);
+}
+
+// ── Phase 14: Estimation Queries ────────────────────────────────────
+
+export function getHistoricalCellCounts(blueprintId: string): number[] {
+  const db = getDb();
+  const results = db.prepare(
+    `SELECT COUNT(*) as cnt FROM cells c
+     JOIN swarms s ON c.swarm_id = s.id
+     WHERE s.blueprint_id = ? AND s.status IN ('completed', 'failed')
+     GROUP BY c.swarm_id`,
+  ).all(blueprintId) as Array<{ cnt: number }>;
+  return results.map(r => r.cnt);
+}
+
+export function getCompletedSwarmCount(blueprintId: string): number {
+  const db = getDb();
+  const result = db.prepare(
+    "SELECT COUNT(*) as count FROM swarms WHERE blueprint_id = ? AND status IN ('completed', 'failed', 'cancelled')",
+  ).get(blueprintId);
+  return row<{ count: number }>(result).count;
+}
+
+export function getAvgSwarmDuration(blueprintId: string): number | null {
+  const db = getDb();
+  const result = db.prepare(
+    `SELECT AVG(ROUND((julianday(updated_at) - julianday(created_at)) * 86400)) as avg_dur
+     FROM swarms WHERE blueprint_id = ? AND status IN ('completed', 'failed')`,
+  ).get(blueprintId);
+  const val = row<{ avg_dur: number | null }>(result).avg_dur;
+  return val !== null ? Math.round(val) : null;
+}
+
+// ── Phase 14: Gate Policy Queries ───────────────────────────────────
+
+export function getGatedFlightsAll(): FlightRecord[] {
+  const db = getDb();
+  return rows<FlightRecord>(
+    db.prepare("SELECT * FROM flights WHERE status = 'gated' ORDER BY updated_at ASC").all(),
+  );
+}
+
+export function getExpiredGatedFlights(timeoutMinutes: number): FlightRecord[] {
+  const db = getDb();
+  return rows<FlightRecord>(
+    db.prepare(
+      `SELECT * FROM flights WHERE status = 'gated' AND gated_at IS NOT NULL
+       AND gated_at < datetime('now', '-' || ? || ' minutes')`,
+    ).all(timeoutMinutes),
+  );
+}
+
+// ── Phase 14: Blueprint Version Queries ─────────────────────────────
+
+export function insertBlueprintVersion(
+  blueprintId: string,
+  versionNumber: number,
+  spec: string,
+  changesSummary?: string,
+): BlueprintVersionRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO blueprint_versions (id, blueprint_id, version_number, spec, changes_summary) VALUES (?, ?, ?, ?, ?)",
+  ).run(id, blueprintId, versionNumber, spec, changesSummary ?? null);
+  return row<BlueprintVersionRecord>(db.prepare("SELECT * FROM blueprint_versions WHERE id = ?").get(id));
+}
+
+export function getBlueprintVersions(blueprintId: string): BlueprintVersionRecord[] {
+  const db = getDb();
+  return rows<BlueprintVersionRecord>(
+    db.prepare("SELECT * FROM blueprint_versions WHERE blueprint_id = ? ORDER BY version_number ASC").all(blueprintId),
+  );
+}
+
+export function getBlueprintVersion(blueprintId: string, versionNumber: number): BlueprintVersionRecord | undefined {
+  const db = getDb();
+  const result = db.prepare(
+    "SELECT * FROM blueprint_versions WHERE blueprint_id = ? AND version_number = ?",
+  ).get(blueprintId, versionNumber);
+  return result ? row<BlueprintVersionRecord>(result) : undefined;
+}
+
+export function getLatestBlueprintVersionNumber(blueprintId: string): number {
+  const db = getDb();
+  const result = db.prepare(
+    "SELECT MAX(version_number) as max_ver FROM blueprint_versions WHERE blueprint_id = ?",
+  ).get(blueprintId);
+  const val = row<{ max_ver: number | null }>(result).max_ver;
+  return val ?? 0;
+}
+
+// ── Phase 15: Budget Queries ─────────────────────────────────────────
+
+export function setSwarmBudget(swarmId: string, tokenBudget: number, budgetAction: string): void {
+  const db = getDb();
+  db.prepare(
+    "UPDATE swarms SET token_budget = ?, budget_action = ?, updated_at = datetime('now') WHERE id = ?",
+  ).run(tokenBudget, budgetAction, swarmId);
+}
+
+export function getSwarmTokenUsage(swarmId: string): number {
+  const db = getDb();
+  const result = db.prepare(
+    "SELECT COALESCE(SUM(input_tokens + output_tokens), 0) as total FROM flight_usage WHERE swarm_id = ?",
+  ).get(swarmId);
+  return row<{ total: number }>(result).total;
+}
+
+// ── Phase 15: Cache Queries ─────────────────────────────────────────
+
+export function getCachedResult(blueprintId: string, flightId: string, inputHash: string): CacheEntry | undefined {
+  const db = getDb();
+  const result = db.prepare(
+    "SELECT * FROM flight_cache WHERE blueprint_id = ? AND flight_id = ? AND input_hash = ? AND expires_at > datetime('now')",
+  ).get(blueprintId, flightId, inputHash);
+  if (result) {
+    db.prepare("UPDATE flight_cache SET hit_count = hit_count + 1 WHERE id = ?").run(row<CacheEntry>(result).id);
+    return row<CacheEntry>(result);
+  }
+  return undefined;
+}
+
+export function insertCacheEntry(
+  blueprintId: string,
+  flightId: string,
+  inputHash: string,
+  output: string,
+  nectarKeys: string[] | null,
+  expiresAt: string,
+): CacheEntry {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    `INSERT OR REPLACE INTO flight_cache (id, blueprint_id, flight_id, input_hash, output, nectar_keys, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, blueprintId, flightId, inputHash, output, nectarKeys ? JSON.stringify(nectarKeys) : null, expiresAt);
+  return row<CacheEntry>(db.prepare("SELECT * FROM flight_cache WHERE id = ?").get(id));
+}
+
+export function getCacheStats(): { entries: number; total_hits: number; expired: number } {
+  const db = getDb();
+  const entries = row<{ count: number }>(db.prepare("SELECT COUNT(*) as count FROM flight_cache").get()).count;
+  const totalHits = row<{ total: number }>(db.prepare("SELECT COALESCE(SUM(hit_count), 0) as total FROM flight_cache").get()).total;
+  const expired = row<{ count: number }>(db.prepare("SELECT COUNT(*) as count FROM flight_cache WHERE expires_at <= datetime('now')").get()).count;
+  return { entries, total_hits: totalHits, expired };
+}
+
+export function clearFlightCache(blueprintId?: string, flightId?: string): number {
+  const db = getDb();
+  if (blueprintId && flightId) {
+    const result = db.prepare("DELETE FROM flight_cache WHERE blueprint_id = ? AND flight_id = ?").run(blueprintId, flightId);
+    return Number(result.changes);
+  }
+  if (blueprintId) {
+    const result = db.prepare("DELETE FROM flight_cache WHERE blueprint_id = ?").run(blueprintId);
+    return Number(result.changes);
+  }
+  const result = db.prepare("DELETE FROM flight_cache").run();
+  return Number(result.changes);
+}
+
+export function deleteExpiredCache(): number {
+  const db = getDb();
+  const result = db.prepare("DELETE FROM flight_cache WHERE expires_at <= datetime('now')").run();
+  return Number(result.changes);
+}
+
+// ── Phase 15: Template Queries ──────────────────────────────────────
+
+export function insertTemplate(
+  name: string,
+  blueprintId: string,
+  description?: string,
+  variables?: string,
+  priority?: number,
+  options?: string,
+): SwarmTemplate {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    `INSERT INTO swarm_templates (id, name, blueprint_id, description, variables, priority, options)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, name, blueprintId, description ?? null, variables ?? "{}", priority ?? 5, options ?? "{}");
+  return row<SwarmTemplate>(db.prepare("SELECT * FROM swarm_templates WHERE id = ?").get(id));
+}
+
+export function getTemplate(name: string): SwarmTemplate | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM swarm_templates WHERE name = ?").get(name);
+  return result ? row<SwarmTemplate>(result) : undefined;
+}
+
+export function listTemplates(): SwarmTemplate[] {
+  const db = getDb();
+  return rows<SwarmTemplate>(db.prepare("SELECT * FROM swarm_templates ORDER BY usage_count DESC, name ASC").all());
+}
+
+export function deleteTemplate(name: string): boolean {
+  const db = getDb();
+  const result = db.prepare("DELETE FROM swarm_templates WHERE name = ?").run(name);
+  return Number(result.changes) > 0;
+}
+
+export function incrementTemplateUsage(name: string): void {
+  const db = getDb();
+  db.prepare("UPDATE swarm_templates SET usage_count = usage_count + 1, updated_at = datetime('now') WHERE name = ?").run(name);
+}
+
+// ── Phase 15: Budget-aware swarm queries ─────────────────────────────
+
+export function getBudgetExceededSwarms(): Array<{ id: string; swarm_number: number; token_budget: number; budget_action: string; consumed: number }> {
+  const db = getDb();
+  return db.prepare(
+    `SELECT s.id, s.swarm_number, s.token_budget, s.budget_action,
+       COALESCE((SELECT SUM(input_tokens + output_tokens) FROM flight_usage WHERE swarm_id = s.id), 0) as consumed
+     FROM swarms s
+     WHERE s.status = 'buzzing' AND s.token_budget > 0
+     AND COALESCE((SELECT SUM(input_tokens + output_tokens) FROM flight_usage WHERE swarm_id = s.id), 0) > s.token_budget
+     AND s.budget_action = 'warn'`,
+  ).all() as Array<{ id: string; swarm_number: number; token_budget: number; budget_action: string; consumed: number }>;
 }
 
 /** Close the database connection */
