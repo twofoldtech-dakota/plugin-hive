@@ -16,6 +16,11 @@ export interface SwarmAnalytics {
   };
   bee_utilization: Record<string, { flights_completed: number; total_seconds: number }>;
   parallelism_ratio: number;
+  usage?: {
+    total_tokens: number;
+    input_tokens: number;
+    output_tokens: number;
+  };
 }
 
 export type GetSwarmAnalyticsResult =
@@ -80,6 +85,19 @@ export function getSwarmAnalytics(swarmId: string): GetSwarmAnalyticsResult {
     }
   }
 
+  // Token usage
+  const usageRecords = db.getUsageForSwarm(swarmId);
+  let usageData: SwarmAnalytics["usage"];
+  if (usageRecords.length > 0) {
+    let totalInput = 0;
+    let totalOutput = 0;
+    for (const u of usageRecords) {
+      totalInput += u.input_tokens;
+      totalOutput += u.output_tokens;
+    }
+    usageData = { total_tokens: totalInput + totalOutput, input_tokens: totalInput, output_tokens: totalOutput };
+  }
+
   return {
     success: true,
     data: {
@@ -98,6 +116,7 @@ export function getSwarmAnalytics(swarmId: string): GetSwarmAnalyticsResult {
       },
       bee_utilization: beeUtilization,
       parallelism_ratio: parallelismRatio,
+      usage: usageData,
     },
   };
 }

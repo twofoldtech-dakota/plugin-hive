@@ -7,6 +7,11 @@ vi.mock("../db.js", () => ({
   getSwarm: vi.fn(),
   updateSwarm: vi.fn(),
   bumpEpoch: vi.fn(),
+  getBlueprint: vi.fn(),
+}));
+
+vi.mock("../snapshot/checkpoint.js", () => ({
+  checkpointOnTransition: vi.fn(),
 }));
 
 vi.mock("../lib/events.js", () => ({

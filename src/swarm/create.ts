@@ -2,6 +2,7 @@ import * as db from "../db.js";
 import { emitEvent } from "../lib/events.js";
 import { logger } from "../lib/logger.js";
 import { validateInputs } from "../blueprint/info.js";
+import { checkConcurrency } from "../concurrency/enforce.js";
 import type { BlueprintSpec, FlightSpec } from "../types.js";
 
 export type CreateSwarmResult =
@@ -18,7 +19,7 @@ export type CreateSwarmResult =
     }
   | { success: false; error: string };
 
-export function createSwarmFromBlueprint(blueprintId: string, task: string, variables?: Record<string, string>): CreateSwarmResult {
+export function createSwarmFromBlueprint(blueprintId: string, task: string, variables?: Record<string, string>, chainId?: string, parentSwarmId?: string, opts?: { priority?: number; schedule_at?: string }): CreateSwarmResult {
   const bp = db.getBlueprint(blueprintId);
   if (!bp) {
     return { success: false, error: `Blueprint "${blueprintId}" is not installed. Use hive_blueprint_install first.` };
@@ -33,7 +34,27 @@ export function createSwarmFromBlueprint(blueprintId: string, task: string, vari
   }
 
   const nectar: Record<string, string> = { task, ...(spec.nectar ?? {}), ...inputResult.merged };
-  const swarm = db.createSwarm(blueprintId, task, nectar, spec.notifications?.url);
+
+  // Check concurrency limits (skip for scheduled swarms)
+  let queued = false;
+  if (!opts?.schedule_at) {
+    const concurrencyResult = checkConcurrency(blueprintId);
+    if (!concurrencyResult.allowed) {
+      queued = true;
+    }
+  }
+
+  const swarm = db.createSwarm(blueprintId, task, nectar, spec.notifications?.url, {
+    chain_id: chainId,
+    parent_swarm_id: parentSwarmId,
+    priority: opts?.priority,
+    schedule_at: opts?.schedule_at,
+  });
+
+  // Override to queued if concurrency limited
+  if (queued && swarm.status === "buzzing") {
+    db.updateSwarm(swarm.id, { status: "queued" });
+  }
 
   // Collect flight IDs that are verify_flight templates (used dynamically, not as pipeline steps)
   const verifyFlightIds = new Set<string>();
@@ -88,13 +109,25 @@ export function createSwarmFromBlueprint(blueprintId: string, task: string, vari
       flight.when,
       flight.gate,
       flight.retry_strategy ? JSON.stringify(flight.retry_strategy) : undefined,
+      flight.produces,
+      flight.requires,
     );
     flightIndex++;
     insertedCount++;
   }
 
-  emitEvent({ eventType: "swarm.started", swarmId: swarm.id, payload: { blueprint_id: blueprintId, task } });
-  logger.info("Swarm started", { swarmId: swarm.id, swarmNumber: swarm.swarm_number, blueprint_id: blueprintId });
+  const finalStatus = queued ? "queued" : swarm.status;
+
+  if (swarm.status === "scheduled") {
+    emitEvent({ eventType: "swarm.scheduled", swarmId: swarm.id, payload: { blueprint_id: blueprintId, task, schedule_at: opts?.schedule_at } });
+    logger.info("Swarm scheduled", { swarmId: swarm.id, swarmNumber: swarm.swarm_number, schedule_at: opts?.schedule_at });
+  } else if (queued) {
+    emitEvent({ eventType: "swarm.queued", swarmId: swarm.id, payload: { blueprint_id: blueprintId, task, reason: "concurrency_limit" } });
+    logger.info("Swarm queued (concurrency limit)", { swarmId: swarm.id, swarmNumber: swarm.swarm_number });
+  } else {
+    emitEvent({ eventType: "swarm.started", swarmId: swarm.id, payload: { blueprint_id: blueprintId, task } });
+    logger.info("Swarm started", { swarmId: swarm.id, swarmNumber: swarm.swarm_number, blueprint_id: blueprintId });
+  }
 
   return {
     success: true,
@@ -103,7 +136,7 @@ export function createSwarmFromBlueprint(blueprintId: string, task: string, vari
       number: swarm.swarm_number,
       blueprint: blueprintId,
       task,
-      status: swarm.status,
+      status: finalStatus,
       flights: insertedCount,
     },
   };

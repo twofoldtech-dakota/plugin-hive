@@ -174,6 +174,69 @@ export const DAG_BLUEPRINT: BlueprintSpec = {
 };
 
 /**
+ * A blueprint with triggers for testing swarm chaining.
+ */
+export const TRIGGER_BLUEPRINT: BlueprintSpec = {
+  id: "test-trigger",
+  name: "Trigger Blueprint",
+  version: 1,
+  bees: [
+    {
+      id: "worker",
+      role: "coding",
+      chamber: { base_dir: "worker", files: {} },
+    },
+  ],
+  flights: [
+    {
+      id: "do-work",
+      bee: "worker",
+      type: "single",
+      input: "Implement: {{task}}",
+      expects: "STATUS: done",
+      max_retries: 2,
+    },
+  ],
+  triggers: [
+    {
+      on: "swarm.completed",
+      blueprint: "test-bp",
+      nectar_forward: ["status"],
+      task_template: "Follow-up for {{task}}",
+    },
+  ],
+};
+
+/**
+ * A blueprint with beekeeper config for testing checkpoints and thresholds.
+ */
+export const CHECKPOINT_BLUEPRINT: BlueprintSpec = {
+  id: "test-checkpoint",
+  name: "Checkpoint Blueprint",
+  version: 1,
+  bees: [
+    {
+      id: "worker",
+      role: "coding",
+      chamber: { base_dir: "worker", files: {} },
+    },
+  ],
+  flights: [
+    {
+      id: "do-work",
+      bee: "worker",
+      type: "single",
+      input: "Implement: {{task}}",
+      expects: "STATUS: done",
+      max_retries: 2,
+    },
+  ],
+  beekeeper: {
+    checkpoint_interval: 1,
+  },
+};
+
+/**
  * Reset the test database by closing and deleting the DB file, then re-initializing.
  */
 export function freshDb(): void {

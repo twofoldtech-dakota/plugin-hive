@@ -12,6 +12,18 @@ import type {
   EventRecord,
   BeekeeperCheckRecord,
   HiveEventType,
+  ChainRecord,
+  BlueprintSourceRecord,
+  SnapshotRecord,
+  FlightTraceRecord,
+  NotificationConfigRecord,
+  WebhookDeliveryRecord,
+  FlightPulseRecord,
+  FlightUsageRecord,
+  BeeStatsRecord,
+  HiveConfigRecord,
+  SwarmArchiveRecord,
+  MaintenanceResult,
 } from "./types.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -184,6 +196,217 @@ function migrate(db: DatabaseSync): void {
   if (!cols.some(c => c.name === "retry_strategy")) {
     db.exec("ALTER TABLE flights ADD COLUMN retry_strategy TEXT");
   }
+
+  // Migration: Phase 10 — new tables
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chains (
+      id TEXT PRIMARY KEY,
+      name TEXT,
+      root_swarm_id TEXT NOT NULL,
+      status TEXT DEFAULT 'active',
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS blueprint_sources (
+      id TEXT PRIMARY KEY,
+      blueprint_id TEXT NOT NULL,
+      source_type TEXT NOT NULL,
+      source_uri TEXT,
+      pinned_version INTEGER,
+      installed_version INTEGER,
+      last_checked_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS snapshots (
+      id TEXT PRIMARY KEY,
+      swarm_id TEXT NOT NULL,
+      snapshot_type TEXT DEFAULT 'manual',
+      data TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS flight_traces (
+      id TEXT PRIMARY KEY,
+      flight_id TEXT NOT NULL,
+      swarm_id TEXT NOT NULL,
+      trace_type TEXT NOT NULL,
+      data TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS notification_config (
+      id TEXT PRIMARY KEY DEFAULT 'global',
+      default_url TEXT,
+      enabled_events TEXT,
+      format TEXT DEFAULT 'standard',
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS webhook_deliveries (
+      id TEXT PRIMARY KEY,
+      event_id TEXT NOT NULL,
+      url TEXT NOT NULL,
+      status TEXT DEFAULT 'pending',
+      attempts INTEGER DEFAULT 0,
+      max_attempts INTEGER DEFAULT 3,
+      last_attempt_at TEXT,
+      last_error TEXT,
+      response_status INTEGER,
+      next_retry_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+  `);
+
+  // Phase 10 indexes
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_chains_root_swarm ON chains(root_swarm_id);
+    CREATE INDEX IF NOT EXISTS idx_snapshots_swarm ON snapshots(swarm_id);
+    CREATE INDEX IF NOT EXISTS idx_flight_traces_flight ON flight_traces(flight_id);
+    CREATE INDEX IF NOT EXISTS idx_flight_traces_swarm ON flight_traces(swarm_id);
+    CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_status ON webhook_deliveries(status);
+    CREATE INDEX IF NOT EXISTS idx_blueprint_sources_bp ON blueprint_sources(blueprint_id);
+  `);
+
+  // Phase 10 — new columns on swarms
+  const swarmCols = db.prepare("PRAGMA table_info(swarms)").all() as Array<{ name: string }>;
+  if (!swarmCols.some(c => c.name === "chain_id")) {
+    db.exec("ALTER TABLE swarms ADD COLUMN chain_id TEXT");
+  }
+  if (!swarmCols.some(c => c.name === "parent_swarm_id")) {
+    db.exec("ALTER TABLE swarms ADD COLUMN parent_swarm_id TEXT");
+  }
+  if (!swarmCols.some(c => c.name === "trigger_config")) {
+    db.exec("ALTER TABLE swarms ADD COLUMN trigger_config TEXT");
+  }
+
+  // Phase 10 — new columns on flights
+  if (!cols.some(c => c.name === "error_context")) {
+    db.exec("ALTER TABLE flights ADD COLUMN error_context TEXT");
+  }
+  if (!cols.some(c => c.name === "checkpoint_data")) {
+    db.exec("ALTER TABLE flights ADD COLUMN checkpoint_data TEXT");
+  }
+
+  // Phase 10 — new columns on blueprints
+  const bpCols = db.prepare("PRAGMA table_info(blueprints)").all() as Array<{ name: string }>;
+  if (!bpCols.some(c => c.name === "source_type")) {
+    db.exec("ALTER TABLE blueprints ADD COLUMN source_type TEXT DEFAULT 'bundled'");
+  }
+  if (!bpCols.some(c => c.name === "source_uri")) {
+    db.exec("ALTER TABLE blueprints ADD COLUMN source_uri TEXT");
+  }
+
+  // Phase 11 — new tables
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS flight_pulses (
+      id TEXT PRIMARY KEY,
+      flight_id TEXT NOT NULL,
+      swarm_id TEXT NOT NULL,
+      step TEXT NOT NULL,
+      progress REAL NOT NULL DEFAULT 0.0,
+      message TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS flight_usage (
+      id TEXT PRIMARY KEY,
+      flight_id TEXT NOT NULL,
+      swarm_id TEXT NOT NULL,
+      bee_id TEXT NOT NULL,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      estimated INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS bee_stats (
+      bee_id TEXT PRIMARY KEY,
+      total_flights INTEGER NOT NULL DEFAULT 0,
+      successes INTEGER NOT NULL DEFAULT 0,
+      failures INTEGER NOT NULL DEFAULT 0,
+      avg_duration_seconds REAL NOT NULL DEFAULT 0,
+      total_tokens INTEGER NOT NULL DEFAULT 0,
+      success_rate REAL NOT NULL DEFAULT 0,
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+  `);
+
+  // Phase 11 indexes
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_flight_pulses_flight ON flight_pulses(flight_id);
+    CREATE INDEX IF NOT EXISTS idx_flight_pulses_swarm ON flight_pulses(swarm_id);
+    CREATE INDEX IF NOT EXISTS idx_flight_usage_flight ON flight_usage(flight_id);
+    CREATE INDEX IF NOT EXISTS idx_flight_usage_swarm ON flight_usage(swarm_id);
+  `);
+
+  // Phase 11 — new columns on swarms
+  if (!swarmCols.some(c => c.name === "priority")) {
+    db.exec("ALTER TABLE swarms ADD COLUMN priority INTEGER DEFAULT 5");
+  }
+  if (!swarmCols.some(c => c.name === "schedule_at")) {
+    db.exec("ALTER TABLE swarms ADD COLUMN schedule_at TEXT");
+  }
+
+  // Phase 12 — new tables
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS hive_config (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS swarm_archives (
+      id TEXT PRIMARY KEY,
+      swarm_number INTEGER,
+      blueprint_id TEXT,
+      task TEXT,
+      original_status TEXT,
+      data TEXT NOT NULL,
+      archived_at TEXT DEFAULT (datetime('now'))
+    );
+  `);
+
+  // Phase 12 indexes
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_swarm_archives_blueprint ON swarm_archives(blueprint_id);
+    CREATE INDEX IF NOT EXISTS idx_swarm_archives_archived ON swarm_archives(archived_at);
+  `);
+
+  // Phase 12 — new columns on flights
+  if (!cols.some(c => c.name === "produces")) {
+    db.exec("ALTER TABLE flights ADD COLUMN produces TEXT");
+  }
+  if (!cols.some(c => c.name === "requires")) {
+    db.exec("ALTER TABLE flights ADD COLUMN requires TEXT");
+  }
+
+  // Phase 12 — seed default config
+  db.exec(`
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('max_concurrent_swarms', '5');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('max_flights_per_bee', '1');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('retention_days', '30');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('auto_archive', 'false');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('default_priority', '5');
+  `);
+
+  // Phase 13 — new column on swarms
+  const swarmCols13 = db.prepare("PRAGMA table_info(swarms)").all() as Array<{ name: string }>;
+  if (!swarmCols13.some(c => c.name === "replayed_from")) {
+    db.exec("ALTER TABLE swarms ADD COLUMN replayed_from TEXT");
+  }
+
+  // Phase 13 — last_maintenance_at meta key + retention config
+  db.exec(`
+    INSERT OR IGNORE INTO hive_meta (key, value) VALUES ('last_maintenance_at', '');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('event_retention_days', '30');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('trace_retention_days', '14');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('check_retention_days', '7');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('webhook_retention_days', '14');
+    INSERT OR IGNORE INTO hive_config (key, value) VALUES ('auto_maintain', 'false');
+  `);
 }
 
 // ── Blueprints ───────────────────────────────────────────────────────
@@ -225,6 +448,7 @@ export function createSwarm(
   task: string,
   nectar: Record<string, string> = {},
   notifyUrl?: string,
+  opts?: { chain_id?: string; parent_swarm_id?: string; trigger_config?: string; priority?: number; schedule_at?: string },
 ): SwarmRecord {
   const db = getDb();
   const id = randomUUID();
@@ -234,10 +458,18 @@ export function createSwarm(
   const maxNum = result ? (row<{ max_num: number | null }>(result)).max_num : null;
   const swarmNumber = (maxNum ?? 0) + 1;
 
+  const priority = opts?.priority ?? 5;
+  const scheduleAt = opts?.schedule_at ?? null;
+  const status = scheduleAt ? "scheduled" : "buzzing";
+
   db.prepare(
-    `INSERT INTO swarms (id, swarm_number, blueprint_id, task, status, nectar, notify_url)
-     VALUES (?, ?, ?, ?, 'buzzing', ?, ?)`,
-  ).run(id, swarmNumber, blueprintId, task, JSON.stringify(nectar), notifyUrl ?? null);
+    `INSERT INTO swarms (id, swarm_number, blueprint_id, task, status, nectar, notify_url, chain_id, parent_swarm_id, trigger_config, priority, schedule_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id, swarmNumber, blueprintId, task, status, JSON.stringify(nectar), notifyUrl ?? null,
+    opts?.chain_id ?? null, opts?.parent_swarm_id ?? null, opts?.trigger_config ?? null,
+    priority, scheduleAt,
+  );
 
   return getSwarm(id)!;
 }
@@ -339,14 +571,18 @@ export function insertFlight(
   whenClause?: string,
   gate?: string,
   retryStrategy?: string,
+  produces?: string[],
+  requires?: string[],
 ): FlightRecord {
   const db = getDb();
   const id = randomUUID();
   const dependsOnJson = dependsOn && dependsOn.length > 0 ? JSON.stringify(dependsOn) : null;
+  const producesJson = produces && produces.length > 0 ? JSON.stringify(produces) : null;
+  const requiresJson = requires && requires.length > 0 ? JSON.stringify(requires) : null;
   db.prepare(
-    `INSERT INTO flights (id, swarm_id, flight_id, bee_id, flight_index, input_template, expects, status, max_retries, type, loop_config, depends_on, when_clause, gate, retry_strategy)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, swarmId, flightId, beeId, flightIndex, inputTemplate, expects, status, maxRetries, type, loopConfig ?? null, dependsOnJson, whenClause ?? null, gate ?? null, retryStrategy ?? null);
+    `INSERT INTO flights (id, swarm_id, flight_id, bee_id, flight_index, input_template, expects, status, max_retries, type, loop_config, depends_on, when_clause, gate, retry_strategy, produces, requires)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, swarmId, flightId, beeId, flightIndex, inputTemplate, expects, status, maxRetries, type, loopConfig ?? null, dependsOnJson, whenClause ?? null, gate ?? null, retryStrategy ?? null, producesJson, requiresJson);
   return getFlight(id)!;
 }
 
@@ -415,7 +651,7 @@ export function claimFlightForBee(beeId: string): FlightRecord | undefined {
        JOIN swarms s ON f.swarm_id = s.id
        WHERE f.bee_id = ? AND f.status = 'pending' AND s.status = 'buzzing'
        AND (f.retry_at IS NULL OR f.retry_at <= datetime('now'))
-       ORDER BY f.flight_index ASC
+       ORDER BY s.priority DESC, f.flight_index ASC
        LIMIT 1`,
     )
     .get(beeId);
@@ -435,7 +671,7 @@ export function updateFlight(
   updates: Partial<
     Pick<
       FlightRecord,
-      "status" | "output" | "retry_count" | "current_cell_id" | "abandoned_count" | "verify_meta" | "started_at" | "completed_at" | "retry_at"
+      "status" | "output" | "retry_count" | "current_cell_id" | "abandoned_count" | "verify_meta" | "started_at" | "completed_at" | "retry_at" | "error_context" | "checkpoint_data"
     >
   >,
 ): void {
@@ -478,6 +714,14 @@ export function updateFlight(
   if (updates.retry_at !== undefined) {
     sets.push("retry_at = ?");
     params.push(updates.retry_at);
+  }
+  if (updates.error_context !== undefined) {
+    sets.push("error_context = ?");
+    params.push(updates.error_context);
+  }
+  if (updates.checkpoint_data !== undefined) {
+    sets.push("checkpoint_data = ?");
+    params.push(updates.checkpoint_data);
   }
 
   params.push(id);
@@ -771,6 +1015,690 @@ export function getStuckCells(swarmId: string, minutes: number = 30): CellRecord
        AND started_at < datetime('now', '-' || ? || ' minutes')`,
     ).all(swarmId, minutes),
   );
+}
+
+// ── Chains ──────────────────────────────────────────────────────────
+
+export function insertChain(
+  rootSwarmId: string,
+  name?: string,
+): ChainRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO chains (id, name, root_swarm_id) VALUES (?, ?, ?)",
+  ).run(id, name ?? null, rootSwarmId);
+  return getChain(id)!;
+}
+
+export function getChain(id: string): ChainRecord | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM chains WHERE id = ?").get(id);
+  return result ? row<ChainRecord>(result) : undefined;
+}
+
+export function getChainByRootSwarm(swarmId: string): ChainRecord | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM chains WHERE root_swarm_id = ?").get(swarmId);
+  return result ? row<ChainRecord>(result) : undefined;
+}
+
+export function listChains(filters?: { status?: string }): ChainRecord[] {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: SQLInputValue[] = [];
+  if (filters?.status) {
+    conditions.push("status = ?");
+    params.push(filters.status);
+  }
+  const where = conditions.length > 0 ? "WHERE " + conditions.join(" AND ") : "";
+  const stmt = db.prepare(`SELECT * FROM chains ${where} ORDER BY created_at DESC`);
+  return rows<ChainRecord>(params.length > 0 ? stmt.all(...params) : stmt.all());
+}
+
+export function updateChain(
+  id: string,
+  updates: Partial<Pick<ChainRecord, "status" | "name">>,
+): void {
+  const db = getDb();
+  const sets: string[] = ["updated_at = datetime('now')"];
+  const params: SQLInputValue[] = [];
+  if (updates.status !== undefined) {
+    sets.push("status = ?");
+    params.push(updates.status);
+  }
+  if (updates.name !== undefined) {
+    sets.push("name = ?");
+    params.push(updates.name);
+  }
+  params.push(id);
+  db.prepare(`UPDATE chains SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+}
+
+export function getSwarmsForChain(chainId: string): SwarmRecord[] {
+  const db = getDb();
+  return rows<SwarmRecord>(
+    db.prepare("SELECT * FROM swarms WHERE chain_id = ? ORDER BY created_at ASC").all(chainId),
+  );
+}
+
+// ── Blueprint Sources ───────────────────────────────────────────────
+
+export function insertBlueprintSource(
+  blueprintId: string,
+  sourceType: string,
+  sourceUri?: string,
+  installedVersion?: number,
+): BlueprintSourceRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO blueprint_sources (id, blueprint_id, source_type, source_uri, installed_version) VALUES (?, ?, ?, ?, ?)",
+  ).run(id, blueprintId, sourceType, sourceUri ?? null, installedVersion ?? null);
+  return row<BlueprintSourceRecord>(db.prepare("SELECT * FROM blueprint_sources WHERE id = ?").get(id));
+}
+
+export function getBlueprintSource(blueprintId: string): BlueprintSourceRecord | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM blueprint_sources WHERE blueprint_id = ? ORDER BY created_at DESC LIMIT 1").get(blueprintId);
+  return result ? row<BlueprintSourceRecord>(result) : undefined;
+}
+
+// ── Snapshots ───────────────────────────────────────────────────────
+
+export function insertSnapshot(
+  swarmId: string,
+  data: string,
+  snapshotType: "manual" | "checkpoint" | "auto" = "manual",
+): SnapshotRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO snapshots (id, swarm_id, snapshot_type, data) VALUES (?, ?, ?, ?)",
+  ).run(id, swarmId, snapshotType, data);
+  return row<SnapshotRecord>(db.prepare("SELECT * FROM snapshots WHERE id = ?").get(id));
+}
+
+export function getSnapshot(id: string): SnapshotRecord | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM snapshots WHERE id = ?").get(id);
+  return result ? row<SnapshotRecord>(result) : undefined;
+}
+
+export function getSnapshotsForSwarm(swarmId: string): SnapshotRecord[] {
+  const db = getDb();
+  return rows<SnapshotRecord>(
+    db.prepare("SELECT * FROM snapshots WHERE swarm_id = ? ORDER BY created_at DESC").all(swarmId),
+  );
+}
+
+// ── Flight Traces ───────────────────────────────────────────────────
+
+export function insertFlightTrace(
+  flightId: string,
+  swarmId: string,
+  traceType: "claimed" | "output" | "error" | "retry",
+  data: Record<string, unknown>,
+): FlightTraceRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO flight_traces (id, flight_id, swarm_id, trace_type, data) VALUES (?, ?, ?, ?, ?)",
+  ).run(id, flightId, swarmId, traceType, JSON.stringify(data));
+  return row<FlightTraceRecord>(db.prepare("SELECT * FROM flight_traces WHERE id = ?").get(id));
+}
+
+export function getTracesForFlight(flightId: string): FlightTraceRecord[] {
+  const db = getDb();
+  return rows<FlightTraceRecord>(
+    db.prepare("SELECT * FROM flight_traces WHERE flight_id = ? ORDER BY created_at ASC").all(flightId),
+  );
+}
+
+export function getTracesForSwarm(swarmId: string): FlightTraceRecord[] {
+  const db = getDb();
+  return rows<FlightTraceRecord>(
+    db.prepare("SELECT * FROM flight_traces WHERE swarm_id = ? ORDER BY created_at ASC").all(swarmId),
+  );
+}
+
+// ── Notification Config ─────────────────────────────────────────────
+
+export function getNotificationConfig(): NotificationConfigRecord | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM notification_config WHERE id = 'global'").get();
+  return result ? row<NotificationConfigRecord>(result) : undefined;
+}
+
+export function upsertNotificationConfig(
+  updates: Partial<Pick<NotificationConfigRecord, "default_url" | "enabled_events" | "format">>,
+): NotificationConfigRecord {
+  const db = getDb();
+  const existing = getNotificationConfig();
+  if (existing) {
+    const sets: string[] = ["updated_at = datetime('now')"];
+    const params: SQLInputValue[] = [];
+    if (updates.default_url !== undefined) {
+      sets.push("default_url = ?");
+      params.push(updates.default_url);
+    }
+    if (updates.enabled_events !== undefined) {
+      sets.push("enabled_events = ?");
+      params.push(updates.enabled_events);
+    }
+    if (updates.format !== undefined) {
+      sets.push("format = ?");
+      params.push(updates.format);
+    }
+    params.push("global");
+    db.prepare(`UPDATE notification_config SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+  } else {
+    db.prepare(
+      "INSERT INTO notification_config (id, default_url, enabled_events, format) VALUES ('global', ?, ?, ?)",
+    ).run(updates.default_url ?? null, updates.enabled_events ?? null, updates.format ?? "standard");
+  }
+  return getNotificationConfig()!;
+}
+
+// ── Webhook Deliveries ──────────────────────────────────────────────
+
+export function insertWebhookDelivery(
+  eventId: string,
+  url: string,
+  maxAttempts: number = 3,
+): WebhookDeliveryRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO webhook_deliveries (id, event_id, url, max_attempts) VALUES (?, ?, ?, ?)",
+  ).run(id, eventId, url, maxAttempts);
+  return row<WebhookDeliveryRecord>(db.prepare("SELECT * FROM webhook_deliveries WHERE id = ?").get(id));
+}
+
+export function getWebhookDelivery(id: string): WebhookDeliveryRecord | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM webhook_deliveries WHERE id = ?").get(id);
+  return result ? row<WebhookDeliveryRecord>(result) : undefined;
+}
+
+export function updateWebhookDelivery(
+  id: string,
+  updates: Partial<Pick<WebhookDeliveryRecord, "status" | "attempts" | "last_attempt_at" | "last_error" | "response_status" | "next_retry_at">>,
+): void {
+  const db = getDb();
+  const sets: string[] = [];
+  const params: SQLInputValue[] = [];
+  if (updates.status !== undefined) {
+    sets.push("status = ?");
+    params.push(updates.status);
+  }
+  if (updates.attempts !== undefined) {
+    sets.push("attempts = ?");
+    params.push(updates.attempts);
+  }
+  if (updates.last_attempt_at !== undefined) {
+    sets.push("last_attempt_at = ?");
+    params.push(updates.last_attempt_at);
+  }
+  if (updates.last_error !== undefined) {
+    sets.push("last_error = ?");
+    params.push(updates.last_error);
+  }
+  if (updates.response_status !== undefined) {
+    sets.push("response_status = ?");
+    params.push(updates.response_status);
+  }
+  if (updates.next_retry_at !== undefined) {
+    sets.push("next_retry_at = ?");
+    params.push(updates.next_retry_at);
+  }
+  if (sets.length === 0) return;
+  params.push(id);
+  db.prepare(`UPDATE webhook_deliveries SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+}
+
+export function listWebhookDeliveries(filters?: { status?: string; limit?: number }): WebhookDeliveryRecord[] {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: SQLInputValue[] = [];
+  if (filters?.status) {
+    conditions.push("status = ?");
+    params.push(filters.status);
+  }
+  const where = conditions.length > 0 ? "WHERE " + conditions.join(" AND ") : "";
+  const limit = filters?.limit ? `LIMIT ${filters.limit}` : "LIMIT 50";
+  const stmt = db.prepare(`SELECT * FROM webhook_deliveries ${where} ORDER BY created_at DESC ${limit}`);
+  return rows<WebhookDeliveryRecord>(params.length > 0 ? stmt.all(...params) : stmt.all());
+}
+
+export function getFailedWebhookDeliveries(): WebhookDeliveryRecord[] {
+  const db = getDb();
+  return rows<WebhookDeliveryRecord>(
+    db.prepare(
+      `SELECT * FROM webhook_deliveries
+       WHERE status = 'failed'
+       AND attempts < max_attempts
+       AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))
+       ORDER BY created_at ASC`,
+    ).all(),
+  );
+}
+
+// ── Flight Pulses (Phase 11) ────────────────────────────────────────
+
+export function insertPulse(
+  flightId: string,
+  swarmId: string,
+  step: string,
+  progress: number,
+  message?: string,
+): FlightPulseRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO flight_pulses (id, flight_id, swarm_id, step, progress, message) VALUES (?, ?, ?, ?, ?, ?)",
+  ).run(id, flightId, swarmId, step, progress, message ?? null);
+
+  // Ring buffer: keep only last 20 per flight
+  db.prepare(
+    `DELETE FROM flight_pulses WHERE id NOT IN (
+       SELECT id FROM flight_pulses WHERE flight_id = ? ORDER BY created_at DESC LIMIT 20
+     ) AND flight_id = ?`,
+  ).run(flightId, flightId);
+
+  return row<FlightPulseRecord>(db.prepare("SELECT * FROM flight_pulses WHERE id = ?").get(id));
+}
+
+export function getPulsesForFlight(flightId: string): FlightPulseRecord[] {
+  const db = getDb();
+  return rows<FlightPulseRecord>(
+    db.prepare("SELECT * FROM flight_pulses WHERE flight_id = ? ORDER BY created_at DESC LIMIT 20").all(flightId),
+  );
+}
+
+export function getPulsesForSwarm(swarmId: string): FlightPulseRecord[] {
+  const db = getDb();
+  return rows<FlightPulseRecord>(
+    db.prepare("SELECT * FROM flight_pulses WHERE swarm_id = ? ORDER BY created_at DESC LIMIT 50").all(swarmId),
+  );
+}
+
+export function getLatestPulseForFlight(flightId: string): FlightPulseRecord | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM flight_pulses WHERE flight_id = ? ORDER BY created_at DESC LIMIT 1").get(flightId);
+  return result ? row<FlightPulseRecord>(result) : undefined;
+}
+
+export function deletePulsesForFlight(flightId: string): void {
+  const db = getDb();
+  db.prepare("DELETE FROM flight_pulses WHERE flight_id = ?").run(flightId);
+}
+
+// ── Flight Usage (Phase 11) ─────────────────────────────────────────
+
+export function insertUsage(
+  flightId: string,
+  swarmId: string,
+  beeId: string,
+  inputTokens: number,
+  outputTokens: number,
+  estimated: boolean = false,
+): FlightUsageRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO flight_usage (id, flight_id, swarm_id, bee_id, input_tokens, output_tokens, estimated) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  ).run(id, flightId, swarmId, beeId, inputTokens, outputTokens, estimated ? 1 : 0);
+  return row<FlightUsageRecord>(db.prepare("SELECT * FROM flight_usage WHERE id = ?").get(id));
+}
+
+export function getUsageForSwarm(swarmId: string): FlightUsageRecord[] {
+  const db = getDb();
+  return rows<FlightUsageRecord>(
+    db.prepare("SELECT * FROM flight_usage WHERE swarm_id = ? ORDER BY created_at ASC").all(swarmId),
+  );
+}
+
+export function getUsageForFlight(flightId: string): FlightUsageRecord | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM flight_usage WHERE flight_id = ? ORDER BY created_at DESC LIMIT 1").get(flightId);
+  return result ? row<FlightUsageRecord>(result) : undefined;
+}
+
+// ── Bee Stats (Phase 11) ────────────────────────────────────────────
+
+export function upsertBeeStats(
+  beeId: string,
+  success: boolean,
+  durationSeconds: number,
+  tokens: number,
+): BeeStatsRecord {
+  const db = getDb();
+  const existing = db.prepare("SELECT * FROM bee_stats WHERE bee_id = ?").get(beeId);
+  if (existing) {
+    const stats = row<BeeStatsRecord>(existing);
+    const newTotal = stats.total_flights + 1;
+    const newSuccesses = stats.successes + (success ? 1 : 0);
+    const newFailures = stats.failures + (success ? 0 : 1);
+    const newAvgDuration = ((stats.avg_duration_seconds * stats.total_flights) + durationSeconds) / newTotal;
+    const newTotalTokens = stats.total_tokens + tokens;
+    const newSuccessRate = newTotal > 0 ? newSuccesses / newTotal : 0;
+    db.prepare(
+      `UPDATE bee_stats SET total_flights = ?, successes = ?, failures = ?, avg_duration_seconds = ?,
+       total_tokens = ?, success_rate = ?, updated_at = datetime('now') WHERE bee_id = ?`,
+    ).run(newTotal, newSuccesses, newFailures, Math.round(newAvgDuration * 100) / 100, newTotalTokens, Math.round(newSuccessRate * 1000) / 1000, beeId);
+  } else {
+    db.prepare(
+      `INSERT INTO bee_stats (bee_id, total_flights, successes, failures, avg_duration_seconds, total_tokens, success_rate)
+       VALUES (?, 1, ?, ?, ?, ?, ?)`,
+    ).run(beeId, success ? 1 : 0, success ? 0 : 1, Math.round(durationSeconds * 100) / 100, tokens, success ? 1.0 : 0.0);
+  }
+  return getBeeStats(beeId)!;
+}
+
+export function getBeeStats(beeId: string): BeeStatsRecord | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM bee_stats WHERE bee_id = ?").get(beeId);
+  return result ? row<BeeStatsRecord>(result) : undefined;
+}
+
+export function getAllBeeStats(): BeeStatsRecord[] {
+  const db = getDb();
+  return rows<BeeStatsRecord>(
+    db.prepare("SELECT * FROM bee_stats ORDER BY total_flights DESC").all(),
+  );
+}
+
+export function getBeeStatsForBlueprint(blueprintId: string): BeeStatsRecord[] {
+  const db = getDb();
+  return rows<BeeStatsRecord>(
+    db.prepare("SELECT * FROM bee_stats WHERE bee_id LIKE ? ORDER BY total_flights DESC").all(blueprintId + "_%"),
+  );
+}
+
+export function getLowPerformanceBees(minFlights: number = 5, maxSuccessRate: number = 0.5): BeeStatsRecord[] {
+  const db = getDb();
+  return rows<BeeStatsRecord>(
+    db.prepare(
+      "SELECT * FROM bee_stats WHERE total_flights >= ? AND success_rate < ? ORDER BY success_rate ASC",
+    ).all(minFlights, maxSuccessRate),
+  );
+}
+
+// ── Scheduled Swarms (Phase 11) ─────────────────────────────────────
+
+export function getScheduledSwarms(): SwarmRecord[] {
+  const db = getDb();
+  return rows<SwarmRecord>(
+    db.prepare(
+      `SELECT * FROM swarms WHERE status = 'scheduled' AND datetime(replace(schedule_at, 'T', ' ')) <= datetime('now')`,
+    ).all(),
+  );
+}
+
+// ── Phase 12: Hive Config ────────────────────────────────────────────
+
+export function getHiveConfig(key: string): HiveConfigRecord | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM hive_config WHERE key = ?").get(key);
+  return result ? row<HiveConfigRecord>(result) : undefined;
+}
+
+export function getAllHiveConfig(): HiveConfigRecord[] {
+  const db = getDb();
+  return rows<HiveConfigRecord>(db.prepare("SELECT * FROM hive_config ORDER BY key ASC").all());
+}
+
+export function setHiveConfig(key: string, value: string): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO hive_config (key, value, updated_at) VALUES (?, ?, datetime('now'))
+     ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')`,
+  ).run(key, value, value);
+}
+
+// ── Phase 12: Swarm Archives ────────────────────────────────────────
+
+export function insertSwarmArchive(
+  swarmNumber: number,
+  blueprintId: string,
+  task: string,
+  originalStatus: string,
+  data: string,
+): SwarmArchiveRecord {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO swarm_archives (id, swarm_number, blueprint_id, task, original_status, data) VALUES (?, ?, ?, ?, ?, ?)",
+  ).run(id, swarmNumber, blueprintId, task, originalStatus, data);
+  return row<SwarmArchiveRecord>(db.prepare("SELECT * FROM swarm_archives WHERE id = ?").get(id));
+}
+
+export function getSwarmArchive(id: string): SwarmArchiveRecord | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT * FROM swarm_archives WHERE id = ?").get(id);
+  return result ? row<SwarmArchiveRecord>(result) : undefined;
+}
+
+export function listSwarmArchives(limit: number = 20): SwarmArchiveRecord[] {
+  const db = getDb();
+  return rows<SwarmArchiveRecord>(
+    db.prepare("SELECT * FROM swarm_archives ORDER BY archived_at DESC LIMIT ?").all(limit),
+  );
+}
+
+// ── Phase 12: Data Lifecycle ────────────────────────────────────────
+
+export function deleteSwarmData(swarmId: string): void {
+  const db = getDb();
+  db.prepare("DELETE FROM flight_pulses WHERE swarm_id = ?").run(swarmId);
+  db.prepare("DELETE FROM flight_usage WHERE swarm_id = ?").run(swarmId);
+  db.prepare("DELETE FROM flight_traces WHERE swarm_id = ?").run(swarmId);
+  db.prepare("DELETE FROM snapshots WHERE swarm_id = ?").run(swarmId);
+  db.prepare("DELETE FROM events WHERE swarm_id = ?").run(swarmId);
+  db.prepare("DELETE FROM cells WHERE swarm_id = ?").run(swarmId);
+  db.prepare("DELETE FROM flights WHERE swarm_id = ?").run(swarmId);
+  db.prepare("DELETE FROM swarms WHERE id = ?").run(swarmId);
+}
+
+export function countBuzzingSwarms(blueprintId?: string): number {
+  const db = getDb();
+  if (blueprintId) {
+    const result = db.prepare("SELECT COUNT(*) as count FROM swarms WHERE status = 'buzzing' AND blueprint_id = ?").get(blueprintId);
+    return row<{ count: number }>(result).count;
+  }
+  const result = db.prepare("SELECT COUNT(*) as count FROM swarms WHERE status = 'buzzing'").get();
+  return row<{ count: number }>(result).count;
+}
+
+export function countInFlightForBee(beeId: string): number {
+  const db = getDb();
+  const result = db.prepare("SELECT COUNT(*) as count FROM flights WHERE bee_id = ? AND status = 'in_flight'").get(beeId);
+  return row<{ count: number }>(result).count;
+}
+
+export function getQueuedSwarms(): SwarmRecord[] {
+  const db = getDb();
+  return rows<SwarmRecord>(
+    db.prepare("SELECT * FROM swarms WHERE status = 'queued' ORDER BY priority DESC, created_at ASC").all(),
+  );
+}
+
+export function getOldCompletedSwarms(retentionDays: number): SwarmRecord[] {
+  const db = getDb();
+  return rows<SwarmRecord>(
+    db.prepare(
+      `SELECT * FROM swarms WHERE status IN ('completed', 'failed', 'cancelled')
+       AND updated_at < datetime('now', '-' || ? || ' days')`,
+    ).all(retentionDays),
+  );
+}
+
+export function getTableCounts(): Record<string, number> {
+  const db = getDb();
+  const tables = ["swarms", "flights", "cells", "events", "flight_traces", "snapshots", "flight_pulses", "flight_usage", "swarm_archives"];
+  const counts: Record<string, number> = {};
+  for (const table of tables) {
+    const result = db.prepare(`SELECT COUNT(*) as count FROM ${table}`).get();
+    counts[table] = row<{ count: number }>(result).count;
+  }
+  return counts;
+}
+
+export function getOldestEntry(table: string, dateColumn: string): string | null {
+  const allowedTables = ["swarms", "flights", "cells", "events", "flight_traces", "snapshots", "swarm_archives"];
+  if (!allowedTables.includes(table)) return null;
+  const db = getDb();
+  const result = db.prepare(`SELECT MIN(${dateColumn}) as oldest FROM ${table}`).get();
+  return row<{ oldest: string | null }>(result).oldest;
+}
+
+// ── Phase 13: Fleet Metric Queries ──────────────────────────────────
+
+export function getSwarmCountsByStatus(from?: string, to?: string): Record<string, number> {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: SQLInputValue[] = [];
+  if (from) {
+    conditions.push("created_at >= ?");
+    params.push(from);
+  }
+  if (to) {
+    conditions.push("created_at <= ?");
+    params.push(to);
+  }
+  const where = conditions.length > 0 ? "WHERE " + conditions.join(" AND ") : "";
+  const results = db.prepare(`SELECT status, COUNT(*) as count FROM swarms ${where} GROUP BY status`).all(...params) as Array<{ status: string; count: number }>;
+  const counts: Record<string, number> = {};
+  for (const r of results) counts[r.status] = r.count;
+  return counts;
+}
+
+export function getDailySwarmCounts(from: string, to: string): Array<{ date: string; started: number; completed: number; failed: number }> {
+  const db = getDb();
+  const results = db.prepare(
+    `SELECT DATE(created_at) as date,
+       COUNT(*) as started,
+       SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+       SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed
+     FROM swarms
+     WHERE created_at >= ? AND created_at <= ?
+     GROUP BY DATE(created_at)
+     ORDER BY date ASC`,
+  ).all(from, to) as Array<{ date: string; started: number; completed: number; failed: number }>;
+  return results;
+}
+
+export function getPerBlueprintStats(from?: string, to?: string): Array<{ blueprint_id: string; swarms: number; completed: number; failed: number; avg_duration_seconds: number | null }> {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: SQLInputValue[] = [];
+  if (from) {
+    conditions.push("created_at >= ?");
+    params.push(from);
+  }
+  if (to) {
+    conditions.push("created_at <= ?");
+    params.push(to);
+  }
+  const where = conditions.length > 0 ? "WHERE " + conditions.join(" AND ") : "";
+  return db.prepare(
+    `SELECT blueprint_id,
+       COUNT(*) as swarms,
+       SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+       SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+       AVG(CASE WHEN status IN ('completed', 'failed') THEN ROUND((julianday(updated_at) - julianday(created_at)) * 86400) ELSE NULL END) as avg_duration_seconds
+     FROM swarms ${where}
+     GROUP BY blueprint_id
+     ORDER BY swarms DESC`,
+  ).all(...params) as Array<{ blueprint_id: string; swarms: number; completed: number; failed: number; avg_duration_seconds: number | null }>;
+}
+
+export function getSwarmOrArchive(id: string): { source: "swarm"; data: SwarmRecord } | { source: "archive"; data: SwarmArchiveRecord } | undefined {
+  const swarm = getSwarm(id);
+  if (swarm) return { source: "swarm", data: swarm };
+  const archive = getSwarmArchive(id);
+  if (archive) return { source: "archive", data: archive };
+  // Try by number
+  const num = parseInt(id, 10);
+  if (!isNaN(num)) {
+    const byNum = getSwarmByNumber(num);
+    if (byNum) return { source: "swarm", data: byNum };
+    // Check archives by swarm_number
+    const db = getDb();
+    const archiveResult = db.prepare("SELECT * FROM swarm_archives WHERE swarm_number = ?").get(num);
+    if (archiveResult) return { source: "archive", data: row<SwarmArchiveRecord>(archiveResult) };
+  }
+  return undefined;
+}
+
+// ── Phase 13: Maintenance Queries ───────────────────────────────────
+
+const ACTIVE_STATUSES = "('buzzing', 'paused', 'blocked', 'queued', 'scheduled')";
+
+export function deleteOldEvents(days: number): number {
+  const db = getDb();
+  const result = db.prepare(
+    `DELETE FROM events WHERE created_at < datetime('now', '-' || ? || ' days')
+     AND (swarm_id IS NULL OR swarm_id NOT IN (SELECT id FROM swarms WHERE status IN ${ACTIVE_STATUSES}))`,
+  ).run(days);
+  return Number(result.changes);
+}
+
+export function deleteOldTraces(days: number): number {
+  const db = getDb();
+  const result = db.prepare(
+    `DELETE FROM flight_traces WHERE created_at < datetime('now', '-' || ? || ' days')
+     AND swarm_id NOT IN (SELECT id FROM swarms WHERE status IN ${ACTIVE_STATUSES})`,
+  ).run(days);
+  return Number(result.changes);
+}
+
+export function deleteOldChecks(days: number): number {
+  const db = getDb();
+  const result = db.prepare(
+    `DELETE FROM beekeeper_checks WHERE checked_at < datetime('now', '-' || ? || ' days')`,
+  ).run(days);
+  return Number(result.changes);
+}
+
+export function deleteOldWebhooks(days: number): number {
+  const db = getDb();
+  const result = db.prepare(
+    `DELETE FROM webhook_deliveries WHERE created_at < datetime('now', '-' || ? || ' days')
+     AND status != 'pending'`,
+  ).run(days);
+  return Number(result.changes);
+}
+
+export function deleteOrphanedPulses(): number {
+  const db = getDb();
+  const result = db.prepare(
+    `DELETE FROM flight_pulses WHERE swarm_id NOT IN (SELECT id FROM swarms WHERE status IN ${ACTIVE_STATUSES})
+     AND swarm_id NOT IN (SELECT id FROM swarms)`,
+  ).run();
+  return Number(result.changes);
+}
+
+// ── Phase 13: Meta Helpers ──────────────────────────────────────────
+
+export function getMetaValue(key: string): string | undefined {
+  const db = getDb();
+  const result = db.prepare("SELECT value FROM hive_meta WHERE key = ?").get(key) as { value: string } | undefined;
+  return result?.value;
+}
+
+export function setSwarmReplayedFrom(swarmId: string, replayedFrom: string): void {
+  const db = getDb();
+  db.prepare("UPDATE swarms SET replayed_from = ?, updated_at = datetime('now') WHERE id = ?").run(replayedFrom, swarmId);
+}
+
+export function setMetaValue(key: string, value: string): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO hive_meta (key, value) VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = ?`,
+  ).run(key, value, value);
 }
 
 /** Close the database connection */

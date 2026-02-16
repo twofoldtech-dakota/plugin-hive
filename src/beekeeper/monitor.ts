@@ -1,6 +1,7 @@
 import * as db from "../db.js";
 import { logger } from "../lib/logger.js";
 import { safeJsonParse } from "../lib/json.js";
+import { scheduler } from "../pollinator/scheduler.js";
 import { resolveBeekeeperThresholds } from "./config.js";
 import {
   checkStuckFlights,
@@ -11,6 +12,12 @@ import {
   checkVerificationLoops,
   checkStuckCells,
   checkSlowFlights,
+  checkFailedWebhooks,
+  checkScheduledSwarms,
+  checkLowPerformanceBees,
+  checkQueuedSwarms,
+  checkAutoArchive,
+  checkMaintenance,
 } from "./checks.js";
 import {
   resetStuckFlight,
@@ -20,8 +27,30 @@ import {
   failExhaustedFlight,
   forcePassCell,
   resetStuckCell,
+  retryWebhook,
+  autoArchiveSwarm,
+  autoMaintain,
 } from "./remediate.js";
+import { emitEvent } from "../lib/events.js";
 import type { CheckResult, BeekeeperReport, BlueprintSpec } from "../types.js";
+
+function promoteScheduledSwarm(swarmId: string): { success: boolean } {
+  const swarm = db.getSwarm(swarmId);
+  if (!swarm || swarm.status !== "scheduled") return { success: false };
+  db.updateSwarm(swarmId, { status: "buzzing" });
+  db.bumpEpoch();
+  emitEvent({ eventType: "swarm.promoted", swarmId, payload: { schedule_at: swarm.schedule_at } });
+
+  // Register with scheduler
+  const bp = db.getBlueprint(swarm.blueprint_id);
+  if (bp) {
+    const spec = safeJsonParse<BlueprintSpec | null>(bp.spec, null);
+    if (spec) scheduler.registerSwarm(swarmId, spec);
+  }
+
+  logger.info("Scheduled swarm promoted", { swarmId, swarmNumber: swarm.swarm_number });
+  return { success: true };
+}
 
 const remediationMap: Record<string, (entityId: string) => { success: boolean }> = {
   resetStuckFlight,
@@ -31,6 +60,10 @@ const remediationMap: Record<string, (entityId: string) => { success: boolean }>
   failExhaustedFlight,
   forcePassCell,
   resetStuckCell,
+  retryWebhook,
+  promoteScheduledSwarm,
+  autoArchiveSwarm,
+  autoMaintain,
 };
 
 /**
@@ -44,6 +77,12 @@ export function runBeekeeperCheck(): BeekeeperReport {
     ...checkOrphanedSchedulers(),
     ...checkExhaustedRetries(),
     ...checkSlowFlights(),
+    ...checkFailedWebhooks(),
+    ...checkScheduledSwarms(),
+    ...checkLowPerformanceBees(),
+    ...checkQueuedSwarms(),
+    ...checkAutoArchive(),
+    ...checkMaintenance(),
   ];
 
   // Per-swarm checks (verification loops, stuck cells)

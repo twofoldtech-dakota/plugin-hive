@@ -2,6 +2,7 @@ import { appendFileSync } from "node:fs";
 import * as db from "../db.js";
 import { eventsPath, ensureDataDir } from "./paths.js";
 import { logger } from "./logger.js";
+import { processEventForWebhook } from "../notification/webhook.js";
 import type { HiveEventType, EventRecord } from "../types.js";
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -22,7 +23,7 @@ export type EventEmitResult =
  * Emit a hive event:
  *  1. Insert into the database
  *  2. Append to events.jsonl for Observatory streaming
- *  3. POST to webhook URL if the swarm has one configured
+ *  3. Process webhook delivery via notification system
  */
 export function emitEvent(opts: EmitEventOptions): EventEmitResult {
   const { eventType, swarmId, payload } = opts;
@@ -34,14 +35,12 @@ export function emitEvent(opts: EmitEventOptions): EventEmitResult {
     // 2. JSONL log
     writeJsonl(event);
 
-    // 3. Webhook (fire-and-forget)
+    // 3. Webhook delivery system (creates records + attempts delivery)
     if (swarmId) {
       const swarm = db.getSwarm(swarmId);
-      if (swarm?.notify_url) {
-        fireWebhook(swarm.notify_url, event).catch(() => {
-          // Swallowed — webhook failures should never block the pipeline
-        });
-      }
+      processEventForWebhook(event, swarm?.notify_url);
+    } else {
+      processEventForWebhook(event);
     }
 
     return { success: true, event };
@@ -68,30 +67,6 @@ function writeJsonl(event: EventRecord): void {
   } catch (err) {
     logger.warn("Failed to write JSONL event", {
       eventId: event.id,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
-
-async function fireWebhook(url: string, event: EventRecord): Promise<void> {
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        event_type: event.event_type,
-        swarm_id: event.swarm_id,
-        payload: event.payload ? JSON.parse(event.payload) : null,
-        created_at: event.created_at,
-      }),
-      signal: AbortSignal.timeout(5_000),
-    });
-    if (!response.ok) {
-      logger.warn("Webhook returned non-OK", { url, status: response.status });
-    }
-  } catch (err) {
-    logger.warn("Webhook POST failed", {
-      url,
       error: err instanceof Error ? err.message : String(err),
     });
   }

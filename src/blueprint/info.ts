@@ -7,6 +7,7 @@ export interface BlueprintInfo {
   name?: string;
   version?: number;
   description?: string;
+  extends?: string;
   bees: Array<{ id: string; name?: string; role: string }>;
   flights: Array<{ id: string; bee: string; type: string; when?: string; gate?: string }>;
   inputs?: InputSpec[];
@@ -38,6 +39,7 @@ export function getBlueprintInfo(blueprintId: string): GetBlueprintInfoResult {
       name: spec.name,
       version: spec.version,
       description: spec.description,
+      extends: spec.extends,
       bees: spec.bees.map(b => ({ id: b.id, name: b.name, role: b.role })),
       flights: spec.flights.map(f => ({
         id: f.id,

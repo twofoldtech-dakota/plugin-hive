@@ -54,6 +54,28 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
     text-transform: uppercase;
     letter-spacing: 1px;
   }
+
+  /* Nav Tabs */
+  .nav-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-tab {
+    flex: 1;
+    padding: 8px 4px;
+    text-align: center;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .nav-tab:hover { color: var(--text); }
+  .nav-tab.active { color: var(--amber); border-bottom-color: var(--amber); }
+
   .swarm-list {
     flex: 1;
     overflow-y: auto;
@@ -99,6 +121,8 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
   .badge-failed { background: rgba(231, 76, 60, 0.2); color: var(--red); }
   .badge-cancelled { background: rgba(85, 85, 85, 0.2); color: var(--gray); }
   .badge-paused { background: rgba(155, 89, 182, 0.2); color: var(--purple); }
+  .badge-scheduled { background: rgba(232, 163, 23, 0.2); color: var(--honey); }
+  .badge-queued { background: rgba(232, 163, 23, 0.15); color: var(--amber); }
 
   /* Main */
   .main {
@@ -174,6 +198,52 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
   }
   .card-body { padding: 16px; }
 
+  /* Stats Row */
+  .stats-row {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .stat-card {
+    flex: 1;
+    min-width: 120px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    text-align: center;
+  }
+  .stat-value {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--gold);
+  }
+  .stat-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-top: 4px;
+  }
+
+  /* Trend bars */
+  .trend-bars {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 60px;
+    padding: 8px 0;
+  }
+  .trend-bar {
+    flex: 1;
+    min-width: 4px;
+    border-radius: 2px 2px 0 0;
+    transition: height 0.3s;
+  }
+  .trend-bar.completed { background: var(--green); }
+  .trend-bar.failed { background: var(--red); }
+  .trend-bar.started { background: var(--blue); opacity: 0.4; }
+
   /* Pipeline */
   .pipeline {
     display: flex;
@@ -194,9 +264,25 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
   .flight-node.in_flight { background: rgba(52, 152, 219, 0.2); color: var(--blue); border-color: var(--blue); }
   .flight-node.done { background: rgba(46, 204, 113, 0.15); color: var(--green); }
   .flight-node.failed { background: rgba(231, 76, 60, 0.15); color: var(--red); }
+  .flight-node.gated { background: rgba(232, 163, 23, 0.15); color: var(--honey); border-color: var(--honey); }
   .pipeline-arrow {
     color: var(--text-dim);
     font-size: 14px;
+  }
+
+  /* Pulse progress */
+  .pulse-bar-container {
+    margin-top: 4px;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .pulse-bar-fill {
+    height: 100%;
+    background: var(--amber);
+    border-radius: 2px;
+    transition: width 0.3s;
   }
 
   /* Honeycomb Grid */
@@ -226,6 +312,37 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
   .hex-cell.done { background: var(--green); color: #1a1a2e; }
   .hex-cell.failed { background: var(--red); color: #fff; }
 
+  /* Usage table */
+  .usage-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .usage-table th {
+    text-align: left;
+    padding: 6px 8px;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+    font-weight: 500;
+  }
+  .usage-table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(42, 42, 74, 0.3);
+  }
+
+  /* Chain indicator */
+  .chain-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+    background: rgba(155, 89, 182, 0.2);
+    color: var(--purple);
+    margin-left: 8px;
+  }
+
   /* Event Log */
   .event-log {
     max-height: 240px;
@@ -253,7 +370,13 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
 <body>
   <div class="sidebar">
     <div class="sidebar-header">
-      <h2>Swarms</h2>
+      <h2>Observatory</h2>
+    </div>
+    <div class="nav-tabs">
+      <div class="nav-tab active" data-view="swarms">Swarms</div>
+      <div class="nav-tab" data-view="fleet">Fleet</div>
+      <div class="nav-tab" data-view="archives">Archives</div>
+      <div class="nav-tab" data-view="config">Config</div>
     </div>
     <div class="swarm-list" id="swarm-list"></div>
   </div>
@@ -275,48 +398,22 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
   let selectedSwarm = null;
   let swarms = [];
   let beekeeperStatus = null;
+  let currentView = 'swarms';
 
-  // --- Fetch helpers ---
   async function fetchJSON(url) {
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    return res.json();
+    try {
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      return res.json();
+    } catch { return null; }
   }
 
-  // --- Render sidebar ---
-  function renderSidebar() {
-    const list = document.getElementById('swarm-list');
-    list.innerHTML = swarms.map(s => {
-      const active = selectedSwarm && selectedSwarm.id === s.id ? ' active' : '';
-      const task = s.task.length > 40 ? s.task.slice(0, 40) + '...' : s.task;
-      return '<div class="swarm-item' + active + '" data-id="' + s.id + '">'
-        + '<div style="display:flex;justify-content:space-between;align-items:center">'
-        + '<span class="swarm-num">#' + s.swarm_number + '</span>'
-        + '<span class="badge badge-' + s.status + '">' + s.status + '</span>'
-        + '</div>'
-        + '<div class="swarm-task">' + escapeHtml(task) + '</div>'
-        + '</div>';
-    }).join('');
-
-    list.querySelectorAll('.swarm-item').forEach(el => {
-      el.addEventListener('click', () => selectSwarm(el.dataset.id));
-    });
+  function escapeHtml(str) {
+    var d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
   }
 
-  // --- Select swarm ---
-  async function selectSwarm(id) {
-    const data = await fetchJSON('/api/swarms/' + id);
-    if (!data) return;
-    selectedSwarm = data.swarm;
-    const flights = data.flights;
-    const cells = await fetchJSON('/api/swarms/' + id + '/cells') || [];
-    const events = await fetchJSON('/api/swarms/' + id + '/events?limit=30') || [];
-
-    renderSidebar();
-    renderSwarmDetail(selectedSwarm, flights, cells, events);
-  }
-
-  // --- Format duration ---
   function formatDuration(startedAt, completedAt) {
     if (!startedAt) return '';
     var start = new Date(startedAt.replace(' ', 'T') + 'Z');
@@ -327,39 +424,168 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
     return Math.floor(secs / 3600) + 'h ' + Math.floor((secs % 3600) / 60) + 'm';
   }
 
-  // --- Render swarm detail ---
-  function renderSwarmDetail(swarm, flights, cells, events) {
-    const content = document.getElementById('content');
-    let html = '';
+  // --- Nav tabs ---
+  document.querySelectorAll('.nav-tab').forEach(function(tab) {
+    tab.addEventListener('click', function() {
+      currentView = tab.dataset.view;
+      document.querySelectorAll('.nav-tab').forEach(function(t) { t.classList.remove('active'); });
+      tab.classList.add('active');
+      selectedSwarm = null;
+      if (currentView === 'swarms') { renderSidebar(); renderEmpty(); }
+      else if (currentView === 'fleet') { renderFleetSidebar(); renderFleetView(); }
+      else if (currentView === 'archives') { renderArchiveSidebar(); }
+      else if (currentView === 'config') { renderConfigSidebar(); renderConfigView(); }
+    });
+  });
 
-    // Pipeline
+  // --- Sidebar renderers ---
+  function renderSidebar() {
+    var list = document.getElementById('swarm-list');
+    list.innerHTML = swarms.map(function(s) {
+      var active = selectedSwarm && selectedSwarm.id === s.id ? ' active' : '';
+      var task = s.task.length > 40 ? s.task.slice(0, 40) + '...' : s.task;
+      var chainHtml = s.chain_id ? '<span class="chain-badge">chain</span>' : '';
+      return '<div class="swarm-item' + active + '" data-id="' + s.id + '">'
+        + '<div style="display:flex;justify-content:space-between;align-items:center">'
+        + '<span class="swarm-num">#' + s.swarm_number + chainHtml + '</span>'
+        + '<span class="badge badge-' + s.status + '">' + s.status + '</span>'
+        + '</div>'
+        + '<div class="swarm-task">' + escapeHtml(task) + '</div>'
+        + '</div>';
+    }).join('');
+    list.querySelectorAll('.swarm-item').forEach(function(el) {
+      el.addEventListener('click', function() { selectSwarm(el.dataset.id); });
+    });
+  }
+
+  function renderFleetSidebar() {
+    document.getElementById('swarm-list').innerHTML = '<div style="padding:16px;color:var(--text-dim);font-size:12px">Fleet metrics view. No swarm selection needed.</div>';
+  }
+
+  async function renderArchiveSidebar() {
+    var archives = (await fetchJSON('/api/archives')) || [];
+    var list = document.getElementById('swarm-list');
+    if (archives.length === 0) {
+      list.innerHTML = '<div style="padding:16px;color:var(--text-dim);font-size:12px">No archived swarms</div>';
+      renderEmpty();
+      return;
+    }
+    list.innerHTML = archives.map(function(a) {
+      var task = a.task.length > 40 ? a.task.slice(0, 40) + '...' : a.task;
+      return '<div class="swarm-item" data-archive-id="' + a.id + '">'
+        + '<div style="display:flex;justify-content:space-between;align-items:center">'
+        + '<span class="swarm-num">#' + a.swarm_number + '</span>'
+        + '<span class="badge badge-' + a.original_status + '">' + a.original_status + '</span>'
+        + '</div>'
+        + '<div class="swarm-task">' + escapeHtml(task) + '</div>'
+        + '<div class="swarm-task">Archived: ' + (a.archived_at || '').slice(0, 10) + '</div>'
+        + '</div>';
+    }).join('');
+    list.querySelectorAll('.swarm-item').forEach(function(el) {
+      el.addEventListener('click', async function() {
+        var archive = await fetchJSON('/api/archives/' + el.dataset.archiveId);
+        if (archive) renderArchiveDetail(archive);
+      });
+    });
+    renderEmpty();
+  }
+
+  function renderConfigSidebar() {
+    document.getElementById('swarm-list').innerHTML = '<div style="padding:16px;color:var(--text-dim);font-size:12px">Global hive configuration</div>';
+  }
+
+  // --- Select swarm ---
+  async function selectSwarm(id) {
+    var data = await fetchJSON('/api/swarms/' + id);
+    if (!data) return;
+    selectedSwarm = data.swarm;
+    var flights = data.flights;
+    var cells = (await fetchJSON('/api/swarms/' + id + '/cells')) || [];
+    var events = (await fetchJSON('/api/swarms/' + id + '/events?limit=30')) || [];
+    var pulses = (await fetchJSON('/api/swarms/' + id + '/pulses')) || [];
+    var usage = (await fetchJSON('/api/swarms/' + id + '/usage')) || [];
+    renderSidebar();
+    renderSwarmDetail(selectedSwarm, flights, cells, events, pulses, usage);
+  }
+
+  function renderEmpty() {
+    document.getElementById('content').innerHTML = '<div class="empty-state">Select an item from the sidebar</div>';
+  }
+
+  // --- Render swarm detail ---
+  function renderSwarmDetail(swarm, flights, cells, events, pulses, usage) {
+    var content = document.getElementById('content');
+    var html = '';
+
+    // Chain indicator
+    if (swarm.chain_id) {
+      html += '<div class="card"><div class="card-header">Chain</div><div class="card-body">'
+        + '<span class="chain-badge">Chain: ' + swarm.chain_id.slice(0, 8) + '...</span>'
+        + (swarm.parent_swarm_id ? ' Parent: ' + swarm.parent_swarm_id.slice(0, 8) + '...' : ' (root)')
+        + '</div></div>';
+    }
+
+    // Pipeline with pulse bars
     html += '<div class="card"><div class="card-header">Flight Pipeline</div><div class="card-body"><div class="pipeline">';
-    flights.filter(f => !f.verify_meta).forEach((f, i, arr) => {
+    var regularFlights = flights.filter(function(f) { return !f.verify_meta; });
+    regularFlights.forEach(function(f, i, arr) {
       var dur = formatDuration(f.started_at, f.completed_at);
       var durLabel = dur ? ' (' + dur + ')' : '';
-      html += '<div class="flight-node ' + f.status + '" title="' + escapeHtml(f.flight_id) + durLabel + '">' + escapeHtml(f.flight_id) + (dur ? '<br><small>' + dur + '</small>' : '') + '</div>';
+      var pulseHtml = '';
+      if (f.status === 'in_flight') {
+        var flightPulses = (pulses || []).filter(function(p) { return p.flight_id === f.id; });
+        if (flightPulses.length > 0) {
+          var latest = flightPulses[0];
+          var pct = Math.round(latest.progress * 100);
+          pulseHtml = '<div class="pulse-bar-container"><div class="pulse-bar-fill" style="width:' + pct + '%"></div></div>'
+            + '<div style="font-size:9px;color:var(--text-dim);margin-top:2px">' + escapeHtml(latest.step) + ' ' + pct + '%</div>';
+        }
+      }
+      html += '<div class="flight-node ' + f.status + '" title="' + escapeHtml(f.flight_id) + durLabel + '">'
+        + escapeHtml(f.flight_id) + (dur ? '<br><small>' + dur + '</small>' : '') + pulseHtml + '</div>';
       if (i < arr.length - 1) html += '<span class="pipeline-arrow">&#9654;</span>';
     });
     html += '</div></div></div>';
 
     // Honeycomb cells
     if (cells.length > 0) {
-      const doneCount = cells.filter(c => c.status === 'done').length;
+      var doneCount = cells.filter(function(c) { return c.status === 'done'; }).length;
       html += '<div class="card"><div class="card-header">Cells (' + doneCount + '/' + cells.length + ' done)</div><div class="card-body"><div class="honeycomb">';
-      cells.forEach(c => {
-        const label = c.title.length > 12 ? c.title.slice(0, 12) + '..' : c.title;
+      cells.forEach(function(c) {
+        var label = c.title.length > 12 ? c.title.slice(0, 12) + '..' : c.title;
         html += '<div class="hex-cell ' + c.status + '" title="' + escapeHtml(c.title) + '">' + escapeHtml(label) + '</div>';
       });
       html += '</div></div></div>';
     }
 
+    // Usage panel
+    if (usage && usage.length > 0) {
+      var totalIn = 0, totalOut = 0;
+      usage.forEach(function(u) { totalIn += u.input_tokens; totalOut += u.output_tokens; });
+      html += '<div class="card"><div class="card-header">Token Usage</div><div class="card-body">'
+        + '<table class="usage-table"><tr><th>Bee</th><th>Input</th><th>Output</th><th>Total</th></tr>';
+      // Aggregate by bee
+      var byBee = {};
+      usage.forEach(function(u) {
+        if (!byBee[u.bee_id]) byBee[u.bee_id] = { input: 0, output: 0 };
+        byBee[u.bee_id].input += u.input_tokens;
+        byBee[u.bee_id].output += u.output_tokens;
+      });
+      Object.keys(byBee).forEach(function(bee) {
+        var b = byBee[bee];
+        html += '<tr><td>' + escapeHtml(bee) + '</td><td>' + b.input.toLocaleString() + '</td><td>' + b.output.toLocaleString() + '</td><td>' + (b.input + b.output).toLocaleString() + '</td></tr>';
+      });
+      html += '<tr style="font-weight:600"><td>Total</td><td>' + totalIn.toLocaleString() + '</td><td>' + totalOut.toLocaleString() + '</td><td>' + (totalIn + totalOut).toLocaleString() + '</td></tr>';
+      html += '</table></div></div>';
+    }
+
     // Event log
     if (events.length > 0) {
       html += '<div class="card"><div class="card-header">Event Log</div><div class="card-body"><div class="event-log">';
-      events.forEach(e => {
-        const time = e.created_at ? e.created_at.replace('T', ' ').slice(0, 19) : '';
-        const payload = e.payload ? JSON.parse(e.payload) : {};
-        const detail = Object.entries(payload).map(function(kv) { return kv[0] + '=' + kv[1]; }).join(' ');
+      events.forEach(function(e) {
+        var time = e.created_at ? e.created_at.replace('T', ' ').slice(0, 19) : '';
+        var payload = e.payload ? JSON.parse(e.payload) : {};
+        var detail = Object.entries(payload).map(function(kv) { return kv[0] + '=' + kv[1]; }).join(' ');
         html += '<div class="event-row">'
           + '<span class="event-time">' + time + '</span>'
           + '<span class="event-type">' + escapeHtml(e.event_type) + '</span>'
@@ -372,12 +598,118 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
     content.innerHTML = html;
   }
 
-  // --- Health indicator ---
+  // --- Fleet view ---
+  async function renderFleetView() {
+    var metrics = await fetchJSON('/api/metrics/fleet?period=30d');
+    if (!metrics) { document.getElementById('content').innerHTML = '<div class="empty-state">No fleet data</div>'; return; }
+    var content = document.getElementById('content');
+    var html = '';
+
+    // Stat cards
+    html += '<div class="stats-row">'
+      + '<div class="stat-card"><div class="stat-value">' + metrics.totals.swarms + '</div><div class="stat-label">Swarms (30d)</div></div>'
+      + '<div class="stat-card"><div class="stat-value">' + metrics.totals.completed + '</div><div class="stat-label">Completed</div></div>'
+      + '<div class="stat-card"><div class="stat-value">' + metrics.totals.failed + '</div><div class="stat-label">Failed</div></div>'
+      + '<div class="stat-card"><div class="stat-value">' + Math.round(metrics.totals.success_rate * 100) + '%</div><div class="stat-label">Success Rate</div></div>'
+      + '</div>';
+
+    // Daily trend
+    if (metrics.daily_trend && metrics.daily_trend.length > 0) {
+      var maxCount = Math.max.apply(null, metrics.daily_trend.map(function(d) { return d.started; })) || 1;
+      html += '<div class="card"><div class="card-header">Daily Trend (30d)</div><div class="card-body"><div class="trend-bars">';
+      metrics.daily_trend.forEach(function(d) {
+        var h = Math.max(4, Math.round((d.started / maxCount) * 52));
+        var ch = Math.max(0, Math.round((d.completed / maxCount) * 52));
+        var fh = Math.max(0, Math.round((d.failed / maxCount) * 52));
+        html += '<div style="display:flex;flex-direction:column;align-items:center;flex:1;gap:1px;justify-content:flex-end;height:60px" title="' + d.date + ': ' + d.started + ' started, ' + d.completed + ' completed, ' + d.failed + ' failed">';
+        if (fh > 0) html += '<div class="trend-bar failed" style="height:' + fh + 'px"></div>';
+        if (ch > 0) html += '<div class="trend-bar completed" style="height:' + ch + 'px"></div>';
+        html += '</div>';
+      });
+      html += '</div></div></div>';
+    }
+
+    // Per-blueprint table
+    if (metrics.per_blueprint && metrics.per_blueprint.length > 0) {
+      html += '<div class="card"><div class="card-header">Blueprints</div><div class="card-body">'
+        + '<table class="usage-table"><tr><th>Blueprint</th><th>Swarms</th><th>Success</th><th>Avg Duration</th></tr>';
+      metrics.per_blueprint.forEach(function(bp) {
+        var dur = bp.avg_duration_seconds ? Math.round(bp.avg_duration_seconds) + 's' : '-';
+        html += '<tr><td>' + escapeHtml(bp.blueprint_id) + '</td><td>' + bp.swarms + '</td><td>' + Math.round(bp.success_rate * 100) + '%</td><td>' + dur + '</td></tr>';
+      });
+      html += '</table></div></div>';
+    }
+
+    // Top bees
+    if (metrics.top_bees && metrics.top_bees.length > 0) {
+      html += '<div class="card"><div class="card-header">Top Bees</div><div class="card-body">'
+        + '<table class="usage-table"><tr><th>Bee</th><th>Flights</th><th>Success Rate</th><th>Avg Duration</th></tr>';
+      metrics.top_bees.forEach(function(b) {
+        html += '<tr><td>' + escapeHtml(b.bee_id) + '</td><td>' + b.total_flights + '</td><td>' + Math.round(b.success_rate * 100) + '%</td><td>' + Math.round(b.avg_duration_seconds) + 's</td></tr>';
+      });
+      html += '</table></div></div>';
+    }
+
+    content.innerHTML = html;
+  }
+
+  // --- Archive detail ---
+  function renderArchiveDetail(archive) {
+    var content = document.getElementById('content');
+    var data = {};
+    try { data = JSON.parse(archive.data); } catch {}
+    var html = '<div class="card"><div class="card-header">Archive: #' + archive.swarm_number + '</div><div class="card-body">'
+      + '<p><strong>Blueprint:</strong> ' + escapeHtml(archive.blueprint_id) + '</p>'
+      + '<p><strong>Task:</strong> ' + escapeHtml(archive.task) + '</p>'
+      + '<p><strong>Status:</strong> ' + archive.original_status + '</p>'
+      + '<p><strong>Archived:</strong> ' + (archive.archived_at || '') + '</p>'
+      + '</div></div>';
+
+    if (data.flights) {
+      html += '<div class="card"><div class="card-header">Flights</div><div class="card-body"><div class="pipeline">';
+      data.flights.forEach(function(f, i, arr) {
+        html += '<div class="flight-node ' + f.status + '">' + escapeHtml(f.flight_id) + '</div>';
+        if (i < arr.length - 1) html += '<span class="pipeline-arrow">&#9654;</span>';
+      });
+      html += '</div></div></div>';
+    }
+    content.innerHTML = html;
+  }
+
+  // --- Config view ---
+  async function renderConfigView() {
+    var config = (await fetchJSON('/api/config')) || [];
+    var content = document.getElementById('content');
+    var html = '<div class="card"><div class="card-header">Global Configuration</div><div class="card-body">'
+      + '<table class="usage-table"><tr><th>Key</th><th>Value</th><th>Updated</th></tr>';
+    config.forEach(function(c) {
+      html += '<tr><td>' + escapeHtml(c.key) + '</td><td>' + escapeHtml(c.value) + '</td><td>' + (c.updated_at || '').slice(0, 19) + '</td></tr>';
+    });
+    html += '</table></div></div>';
+
+    // Storage info
+    var storage = await fetchJSON('/api/storage');
+    if (storage) {
+      html += '<div class="card"><div class="card-header">Storage</div><div class="card-body">'
+        + '<p><strong>DB Size:</strong> ' + storage.db_size_display + '</p>';
+      if (storage.table_counts) {
+        html += '<table class="usage-table"><tr><th>Table</th><th>Rows</th></tr>';
+        Object.keys(storage.table_counts).forEach(function(t) {
+          html += '<tr><td>' + t + '</td><td>' + storage.table_counts[t] + '</td></tr>';
+        });
+        html += '</table>';
+      }
+      html += '</div></div>';
+    }
+    content.innerHTML = html;
+  }
+
+  // --- Health ---
   function updateHealth() {
-    const dot = document.getElementById('health-dot');
-    const text = document.getElementById('health-text');
+    var dot = document.getElementById('health-dot');
+    var text = document.getElementById('health-text');
     if (!beekeeperStatus) return;
-    const issues = beekeeperStatus.current_stuck_flights + beekeeperStatus.current_stalled_swarms;
+    var issues = beekeeperStatus.current_stuck_flights + beekeeperStatus.current_stalled_swarms;
     if (issues === 0) {
       dot.className = 'health-dot';
       text.textContent = 'Healthy';
@@ -390,31 +722,28 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
     }
   }
 
-  // --- Poll loop ---
+  // --- Poll ---
   async function poll() {
     swarms = (await fetchJSON('/api/swarms')) || [];
     beekeeperStatus = await fetchJSON('/api/beekeeper/status');
-    renderSidebar();
     updateHealth();
 
-    if (selectedSwarm) {
-      const data = await fetchJSON('/api/swarms/' + selectedSwarm.id);
-      if (data) {
-        selectedSwarm = data.swarm;
-        const cells = (await fetchJSON('/api/swarms/' + selectedSwarm.id + '/cells')) || [];
-        const events = (await fetchJSON('/api/swarms/' + selectedSwarm.id + '/events?limit=30')) || [];
-        renderSwarmDetail(selectedSwarm, data.flights, cells, events);
+    if (currentView === 'swarms') {
+      renderSidebar();
+      if (selectedSwarm) {
+        var data = await fetchJSON('/api/swarms/' + selectedSwarm.id);
+        if (data) {
+          selectedSwarm = data.swarm;
+          var cells = (await fetchJSON('/api/swarms/' + selectedSwarm.id + '/cells')) || [];
+          var events = (await fetchJSON('/api/swarms/' + selectedSwarm.id + '/events?limit=30')) || [];
+          var pulses = (await fetchJSON('/api/swarms/' + selectedSwarm.id + '/pulses')) || [];
+          var usage = (await fetchJSON('/api/swarms/' + selectedSwarm.id + '/usage')) || [];
+          renderSwarmDetail(selectedSwarm, data.flights, cells, events, pulses, usage);
+        }
       }
     }
   }
 
-  function escapeHtml(str) {
-    var d = document.createElement('div');
-    d.textContent = str;
-    return d.innerHTML;
-  }
-
-  // Initial load + poll every 5s
   poll();
   setInterval(poll, 5000);
 })();

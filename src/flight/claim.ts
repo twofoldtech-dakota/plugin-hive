@@ -2,6 +2,7 @@ import * as db from "../db.js";
 import { resolveNectar } from "./template.js";
 import { emitEvent } from "../lib/events.js";
 import { nowUtc } from "../lib/time.js";
+import { insertTrace } from "../trace/record.js";
 import type { FlightClaimResult } from "../types.js";
 
 export type ClaimFlightResult =
@@ -54,6 +55,7 @@ export function claimFlight(beeId: string): ClaimFlightResult {
   const resolvedInput = resolveNectar(flight.input_template, nectar);
 
   emitEvent({ eventType: "flight.claimed", swarmId: swarm.id, payload: { flight_id: flight.flight_id, bee_id: beeId } });
+  insertTrace(flight.id, swarm.id, "claimed", { bee_id: beeId, resolved_input_length: resolvedInput.length });
 
   return {
     success: true,

@@ -4,6 +4,8 @@ import { scheduler } from "../pollinator/scheduler.js";
 import { emitEvent } from "../lib/events.js";
 import { logger } from "../lib/logger.js";
 import { nowUtc } from "../lib/time.js";
+import { archiveSwarm as doArchiveSwarm } from "../archive/archive.js";
+import { runMaintenance } from "../maintenance/janitor.js";
 import type { RemediationResult } from "../types.js";
 
 /**
@@ -98,6 +100,46 @@ export function resetStuckCell(cellId: string): RemediationResult {
   db.updateCell(cellId, { status: "pending" });
   logger.info("Beekeeper: reset stuck cell", { cellId });
   return { action: "resetStuckCell", entity_id: cellId, success: true, detail: "Reset cell to pending" };
+}
+
+/**
+ * Retry a failed webhook delivery.
+ */
+export function retryWebhook(deliveryId: string): RemediationResult {
+  const delivery = db.getWebhookDelivery(deliveryId);
+  if (!delivery) {
+    return { action: "retryWebhook", entity_id: deliveryId, success: false, detail: "Delivery not found" };
+  }
+  // Mark for retry by resetting next_retry_at to now
+  db.updateWebhookDelivery(deliveryId, { next_retry_at: nowUtc() });
+  logger.info("Beekeeper: marked webhook for retry", { deliveryId });
+  return { action: "retryWebhook", entity_id: deliveryId, success: true, detail: `Marked delivery for retry (attempt ${delivery.attempts + 1})` };
+}
+
+/**
+ * Auto-archive a swarm that's past retention.
+ */
+export function autoArchiveSwarm(swarmId: string): RemediationResult {
+  const result = doArchiveSwarm(swarmId);
+  if (result.success) {
+    logger.info("Beekeeper: auto-archived swarm", { swarmId });
+    return { action: "autoArchiveSwarm", entity_id: swarmId, success: true, detail: result.message };
+  }
+  return { action: "autoArchiveSwarm", entity_id: swarmId, success: false, detail: result.error };
+}
+
+/**
+ * Auto-run data maintenance.
+ */
+export function autoMaintain(_entityId: string): RemediationResult {
+  const result = runMaintenance(false);
+  logger.info("Beekeeper: auto-maintenance completed", { totalDeleted: result.total_deleted });
+  return {
+    action: "autoMaintain",
+    entity_id: "maintenance",
+    success: true,
+    detail: `Cleaned ${result.total_deleted} records (events: ${result.deleted.events}, traces: ${result.deleted.traces}, checks: ${result.deleted.checks}, webhooks: ${result.deleted.webhooks}, pulses: ${result.deleted.pulses})`,
+  };
 }
 
 /**

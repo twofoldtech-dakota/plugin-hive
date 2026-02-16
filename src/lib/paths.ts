@@ -80,6 +80,11 @@ export function projectDir(): string {
   return process.env.HIVE_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || process.cwd();
 }
 
+/** Project-local blueprints directory: {projectDir}/.hive/blueprints/ */
+export function projectBlueprintsDir(): string {
+  return join(projectDir(), ".hive", "blueprints");
+}
+
 /** Ensure a directory exists, creating it if needed */
 export function ensureDir(dir: string): string {
   if (!existsSync(dir)) {

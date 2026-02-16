@@ -3,6 +3,9 @@ import { emitEvent } from "../lib/events.js";
 import { logger } from "../lib/logger.js";
 import { safeJsonParse } from "../lib/json.js";
 import { evaluateWhen } from "../flight/when.js";
+import { checkAndFireTriggers } from "../chain/trigger.js";
+import { checkpointOnTransition } from "../snapshot/checkpoint.js";
+import { promoteQueuedSwarms } from "../concurrency/enforce.js";
 import type { AdvanceResult, FlightRecord } from "../types.js";
 
 /**
@@ -31,6 +34,15 @@ export function advancePipeline(swarmId: string): AdvanceResult {
       },
     });
     logger.info("Swarm completed", { swarmId });
+
+    checkpointOnTransition(swarmId, "swarm_completed");
+
+    // Check and fire triggers
+    checkAndFireTriggers(swarmId, "swarm.completed");
+
+    // Promote queued swarms now that a slot is open
+    promoteQueuedSwarms();
+
     return { action: "completed" };
   }
 

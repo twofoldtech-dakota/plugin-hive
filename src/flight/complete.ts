@@ -6,6 +6,11 @@ import { insertCellsFromParsed } from "../cell/manage.js";
 import { logger } from "../lib/logger.js";
 import { safeJsonParse } from "../lib/json.js";
 import { nowUtc } from "../lib/time.js";
+import { insertTrace } from "../trace/record.js";
+import { maybeAutoCheckpoint, checkpointOnTransition } from "../snapshot/checkpoint.js";
+import { trackUsage } from "../usage/track.js";
+import { updateBeeStats } from "../usage/bee-stats.js";
+import { checkProducedKeys } from "../nectar/contracts.js";
 import type { LoopConfig, BlueprintSpec, FlightRecord } from "../types.js";
 
 export type CompleteFlightResult =
@@ -61,11 +66,28 @@ export function completeFlight(flightId: string, output: string): CompleteFlight
     return handleLoopCellCompletion(flight, output, nectar);
   }
 
+  // ── Nectar contract check (warnings only) ────────────────────────
+  if (flight.produces) {
+    const declaredProduces = safeJsonParse<string[]>(flight.produces, []);
+    if (declaredProduces.length > 0) {
+      checkProducedKeys(flightId, flight.swarm_id, declaredProduces, nectar);
+    }
+  }
+
   // ── Single flight — mark done and advance ───────────────────────
   const now = nowUtc();
   db.updateFlight(flightId, { status: "done", output, completed_at: now });
   db.bumpEpoch();
+  db.deletePulsesForFlight(flightId);
+  trackUsage(flightId, flight.swarm_id, flight.bee_id, output);
+  const durationSec = db.getFlightElapsed(flightId) ?? 0;
+  const usage = db.getUsageForFlight(flightId);
+  const tokens = usage ? usage.input_tokens + usage.output_tokens : 0;
+  updateBeeStats(flight.bee_id, true, durationSec, tokens);
+  const nectarKeysProduced = Object.keys(nectar);
+  insertTrace(flightId, flight.swarm_id, "output", { output_length: output.length, nectar_keys_produced: nectarKeysProduced });
   emitEvent({ eventType: "flight.completed", swarmId: flight.swarm_id, payload: { flight_id: flight.flight_id } });
+  maybeAutoCheckpoint(flight.swarm_id);
   const advResult = advancePipeline(flight.swarm_id);
   if (advResult.action === "completed") {
     // Scheduler unregistration handled by caller / index.ts
@@ -269,6 +291,7 @@ function handleVerificationCompletion(
     // Re-activate parent loop flight → pending
     db.updateFlight(meta.parent_flight_id, { status: "pending" });
 
+    checkpointOnTransition(flight.swarm_id, "verification_retry");
     logger.info("Verification: retry requested", {
       cellId: meta.cell_id,
       feedback,
@@ -301,6 +324,7 @@ function handleVerificationCompletion(
   }
 
   db.bumpEpoch();
+  checkpointOnTransition(flight.swarm_id, "verification_pass");
   logger.info("Verification: passed", { cellId: meta.cell_id });
   return { success: true, message: `Verification passed for cell` };
 }

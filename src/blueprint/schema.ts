@@ -48,9 +48,16 @@ const FlightSpecSchema = z.object({
   when: z.string().optional(),
   gate: z.enum(["approval"]).optional(),
   retry_strategy: RetryStrategySchema.optional(),
+  produces: z.array(z.string().min(1)).optional(),
+  requires: z.array(z.string().min(1)).optional(),
   input: z.string().min(1),
   expects: z.string().min(1),
   max_retries: z.number().int().min(0).default(2),
+});
+
+const ConcurrencyConfigSchema = z.object({
+  max_swarms: z.number().int().positive().optional(),
+  max_flights_per_bee: z.number().int().positive().optional(),
 });
 
 const PollingConfigSchema = z.object({
@@ -70,6 +77,17 @@ const BeekeeperConfigSchema = z.object({
   stalled_swarm_minutes: z.number().positive().optional(),
   verification_loop_max: z.number().int().positive().optional(),
   cell_stuck_minutes: z.number().positive().optional(),
+  checkpoint_interval: z.number().int().positive().optional(),
+  checkpoint_on_transitions: z.boolean().optional(),
+});
+
+const TriggerSpecSchema = z.object({
+  on: z.enum(["swarm.completed", "swarm.failed"]),
+  blueprint: z.string().min(1),
+  nectar_forward: z.array(z.string()).optional(),
+  task_template: z.string().optional(),
+  variables: z.record(z.string(), z.string()).optional(),
+  condition: z.string().optional(),
 });
 
 export const BlueprintSpecSchema = z
@@ -78,9 +96,11 @@ export const BlueprintSpecSchema = z
     name: z.string().optional(),
     version: z.number().int().positive().optional(),
     description: z.string().optional(),
+    extends: z.string().optional(),
     polling: PollingConfigSchema.optional(),
-    bees: z.array(BeeSpecSchema).min(1, "Blueprint must define at least one bee"),
-    flights: z.array(FlightSpecSchema).min(1, "Blueprint must define at least one flight"),
+    concurrency: ConcurrencyConfigSchema.optional(),
+    bees: z.array(BeeSpecSchema).default([]),
+    flights: z.array(FlightSpecSchema).default([]),
     nectar: z.record(z.string(), z.string()).optional(),
     notifications: z
       .object({
@@ -89,8 +109,19 @@ export const BlueprintSpecSchema = z
       .optional(),
     inputs: z.array(InputSpecSchema).optional(),
     beekeeper: BeekeeperConfigSchema.optional(),
+    triggers: z.array(TriggerSpecSchema).optional(),
   })
   .superRefine((blueprint, ctx) => {
+    // When extending, bees and flights may be empty (will be resolved at install)
+    if (!blueprint.extends) {
+      if (blueprint.bees.length === 0) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Blueprint must define at least one bee", path: ["bees"] });
+      }
+      if (blueprint.flights.length === 0) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Blueprint must define at least one flight", path: ["flights"] });
+      }
+    }
+
     // Validate bee IDs are unique
     const beeIds = new Set<string>();
     for (const bee of blueprint.bees) {

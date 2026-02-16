@@ -10,6 +10,8 @@ export type GetSwarmStatusResult =
           blueprint: string;
           task: string;
           status: string;
+          priority: number;
+          schedule_at: string | null;
           created_at: string;
         };
         flights: Array<{
@@ -18,11 +20,15 @@ export type GetSwarmStatusResult =
           status: string;
           type: string;
           retries: number;
+          started_at: string | null;
+          completed_at: string | null;
         }>;
         cells?: Array<{
           id: string;
           title: string;
           status: string;
+          started_at: string | null;
+          completed_at: string | null;
         }>;
       };
     }
@@ -46,6 +52,8 @@ export function getSwarmStatus(query: string): GetSwarmStatusResult {
         blueprint: swarm.blueprint_id,
         task: swarm.task,
         status: swarm.status,
+        priority: swarm.priority,
+        schedule_at: swarm.schedule_at,
         created_at: swarm.created_at,
       },
       flights: flights.map(f => ({

@@ -1,14 +1,35 @@
 import * as db from "../db.js";
 import { scheduler } from "../pollinator/scheduler.js";
+import { getConfigBoolean, getConfigNumber } from "../config/global.js";
+import { nowUtc } from "../lib/time.js";
 import type { CheckResult } from "../types.js";
 import type { ResolvedThresholds } from "./config.js";
 
 /**
  * Check for flights stuck in "in_flight" status beyond timeout.
+ * Pulse-aware: if a recent pulse exists within half the timeout, downgrade to advisory.
  */
 export function checkStuckFlights(timeoutMinutes: number = 35): CheckResult[] {
   const stuck = db.getStuckFlights(timeoutMinutes);
+  const halfThresholdMs = (timeoutMinutes * 60 * 1000) / 2;
+
   return stuck.map((f) => {
+    // Check for recent pulse
+    const latestPulse = db.getLatestPulseForFlight(f.id);
+    if (latestPulse) {
+      const pulseAge = Date.now() - new Date(latestPulse.created_at.replace(" ", "T") + "Z").getTime();
+      if (pulseAge < halfThresholdMs) {
+        // Recent pulse — downgrade to advisory (no remediation)
+        return {
+          issue: `Flight "${f.flight_id}" slow but has recent pulse (${latestPulse.step}: ${Math.round(latestPulse.progress * 100)}%)`,
+          severity: "warning" as const,
+          entity_type: "flight" as const,
+          entity_id: f.id,
+          // No remediation — advisory only
+        };
+      }
+    }
+
     // Use started_at for smarter severity: >60 min is critical
     const elapsed = f.started_at ? db.getFlightElapsed(f.id) : null;
     const severity = elapsed !== null && elapsed > 3600 ? "critical" as const : "warning" as const;
@@ -118,6 +139,20 @@ export function checkStuckCells(swarmId: string, thresholds: ResolvedThresholds)
 }
 
 /**
+ * Check for failed webhook deliveries that need retry.
+ */
+export function checkFailedWebhooks(): CheckResult[] {
+  const failed = db.getFailedWebhookDeliveries();
+  return failed.map((d) => ({
+    issue: `Webhook delivery ${d.id.slice(0, 8)} failed (${d.attempts}/${d.max_attempts} attempts)`,
+    severity: d.attempts >= d.max_attempts - 1 ? "critical" as const : "warning" as const,
+    entity_type: "webhook" as const,
+    entity_id: d.id,
+    remediation: "retryWebhook",
+  }));
+}
+
+/**
  * Check for flights approaching timeout (slow flight advisory).
  */
 export function checkSlowFlights(timeoutMinutes: number = 25): CheckResult[] {
@@ -136,4 +171,102 @@ export function checkSlowFlights(timeoutMinutes: number = 25): CheckResult[] {
       entity_id: f.id,
       // Advisory only — no automatic remediation
     }));
+}
+
+/**
+ * Check for scheduled swarms that are due for promotion.
+ */
+export function checkScheduledSwarms(): CheckResult[] {
+  const scheduled = db.getScheduledSwarms();
+  return scheduled.map((s) => ({
+    issue: `Swarm #${s.swarm_number} scheduled and due for promotion`,
+    severity: "warning" as const,
+    entity_type: "swarm" as const,
+    entity_id: s.id,
+    remediation: "promoteScheduledSwarm",
+  }));
+}
+
+/**
+ * Check for bees with low success rate (advisory).
+ */
+export function checkLowPerformanceBees(): CheckResult[] {
+  const lowPerf = db.getLowPerformanceBees(5, 0.5);
+  return lowPerf.map((b) => ({
+    issue: `Bee "${b.bee_id}" has low success rate: ${Math.round(b.success_rate * 100)}% (${b.successes}/${b.total_flights})`,
+    severity: "warning" as const,
+    entity_type: "flight" as const,
+    entity_id: b.bee_id,
+    // Advisory only — no automatic remediation
+  }));
+}
+
+// ── Phase 12: Queue & Archive Checks ─────────────────────────────────
+
+/**
+ * Check for swarms queued for >60 minutes.
+ */
+export function checkQueuedSwarms(): CheckResult[] {
+  const queued = db.getQueuedSwarms();
+  const now = Date.now();
+  const results: CheckResult[] = [];
+
+  for (const s of queued) {
+    const createdAt = new Date(s.created_at.replace(" ", "T") + "Z").getTime();
+    const minutesQueued = (now - createdAt) / (1000 * 60);
+    if (minutesQueued > 60) {
+      results.push({
+        issue: `Swarm #${s.swarm_number} queued for ${Math.round(minutesQueued)} minutes`,
+        severity: "warning" as const,
+        entity_type: "swarm" as const,
+        entity_id: s.id,
+        // Advisory only — user should increase concurrency or stop other swarms
+      });
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Check if auto-maintenance should run (auto_maintain=true, >24h since last).
+ */
+export function checkMaintenance(): CheckResult[] {
+  const autoMaintain = getConfigBoolean("auto_maintain", false);
+  if (!autoMaintain) return [];
+
+  const lastMaintenance = db.getMetaValue("last_maintenance_at");
+  if (lastMaintenance) {
+    const lastAt = new Date(lastMaintenance.replace(" ", "T") + "Z").getTime();
+    const hoursAgo = (Date.now() - lastAt) / (1000 * 60 * 60);
+    if (hoursAgo < 24) return [];
+  }
+
+  return [{
+    issue: "Auto-maintenance due (>24h since last run)",
+    severity: "warning" as const,
+    entity_type: "swarm" as const,
+    entity_id: "maintenance",
+    remediation: "autoMaintain",
+  }];
+}
+
+/**
+ * Check for old completed swarms that should be auto-archived.
+ * Only active when auto_archive=true in global config.
+ */
+export function checkAutoArchive(): CheckResult[] {
+  const autoArchive = getConfigBoolean("auto_archive", false);
+  if (!autoArchive) return [];
+
+  const retentionDays = getConfigNumber("retention_days", 30);
+  const old = db.getOldCompletedSwarms(retentionDays);
+
+  return old.map((s) => ({
+    issue: `Swarm #${s.swarm_number} eligible for auto-archive (${s.status}, older than ${retentionDays} days)`,
+    severity: "warning" as const,
+    entity_type: "swarm" as const,
+    entity_id: s.id,
+    remediation: "autoArchiveSwarm",
+  }));
 }

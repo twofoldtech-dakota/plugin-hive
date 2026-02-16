@@ -24,7 +24,31 @@ import { startObservatory, stopObservatory, getObservatoryStatus } from "./obser
 import { approveFlight } from "./flight/gate.js";
 import { getBlueprintInfo } from "./blueprint/info.js";
 import { getSwarmAnalytics } from "./swarm/analytics.js";
-import type { BlueprintSpec } from "./types.js";
+import { createSnapshot } from "./snapshot/create.js";
+import { listSnapshots } from "./snapshot/list.js";
+import { restoreSnapshot } from "./snapshot/restore.js";
+import { createCheckpoint } from "./snapshot/checkpoint.js";
+import { getFlightTraces, getSwarmTraces } from "./trace/query.js";
+import { getConfig, setConfig } from "./notification/config.js";
+import { retryDelivery, retryAllFailed } from "./notification/webhook.js";
+import { getChainStatus, listChains as listChainsQuery } from "./chain/status.js";
+import { scaffoldBlueprint } from "./blueprint/scaffold.js";
+import { validateBlueprint } from "./blueprint/validate.js";
+import { dryRunBlueprint } from "./blueprint/dryrun.js";
+import { installRemoteBlueprint } from "./blueprint/remote.js";
+import { reportPulse, getFlightProgress } from "./flight/pulse.js";
+import { getSwarmUsage } from "./usage/aggregate.js";
+import { getBeeStatsQuery } from "./usage/bee-stats.js";
+import { getGlobalConfig, setGlobalConfig } from "./config/global.js";
+import { getQueueStatus } from "./concurrency/queue-status.js";
+import { archiveSwarm } from "./archive/archive.js";
+import { getStorageStatus } from "./archive/storage.js";
+import { generateSwarmReport } from "./report/generate.js";
+import { replaySwarm } from "./replay/replay.js";
+import { getFleetMetrics } from "./metrics/fleet.js";
+import { runMaintenance } from "./maintenance/janitor.js";
+import { exportBlueprint, importBlueprint } from "./blueprint/export.js";
+import type { BlueprintSpec, HiveEventType } from "./types.js";
 
 // ── Initialize ───────────────────────────────────────────────────────
 
@@ -151,25 +175,34 @@ server.tool(
     blueprint_id: z.string().describe("The blueprint ID to use"),
     task: z.string().describe("The task description for the swarm"),
     variables: z.record(z.string(), z.string()).optional().describe("Optional input variables for the blueprint"),
+    priority: z.number().int().min(1).max(10).optional().describe("Swarm priority (1-10, default 5). Higher priority flights are claimed first."),
+    schedule_at: z.string().optional().describe("ISO 8601 timestamp to delay swarm start. Swarm enters 'scheduled' status until time arrives."),
   },
-  async ({ blueprint_id, task, variables }) => {
-    const result = createSwarmFromBlueprint(blueprint_id, task, variables);
+  async ({ blueprint_id, task, variables, priority, schedule_at }) => {
+    const result = createSwarmFromBlueprint(blueprint_id, task, variables, undefined, undefined, { priority, schedule_at });
     if (!result.success) {
       return { content: [{ type: "text", text: result.error }], isError: true };
     }
 
-    // Register with scheduler
-    const bp = db.getBlueprint(blueprint_id);
-    if (bp) {
-      const spec = safeJsonParse<BlueprintSpec | null>(bp.spec, null);
-      if (spec) scheduler.registerSwarm(result.data.id, spec);
+    // Register with scheduler (only if not scheduled or queued)
+    if (!schedule_at && result.data.status !== "queued") {
+      const bp = db.getBlueprint(blueprint_id);
+      if (bp) {
+        const spec = safeJsonParse<BlueprintSpec | null>(bp.spec, null);
+        if (spec) scheduler.registerSwarm(result.data.id, spec);
+      }
     }
 
+    const actionMsg = result.data.status === "queued"
+      ? `Swarm #${result.data.number} queued (concurrency limit)`
+      : schedule_at
+        ? `Swarm #${result.data.number} scheduled`
+        : `Swarm #${result.data.number} started`;
     return {
       content: [{
         type: "text",
         text: JSON.stringify({
-          message: `Swarm #${result.data.number} started`,
+          message: actionMsg,
           swarm: result.data,
         }, null, 2),
       }],
@@ -196,7 +229,7 @@ server.tool(
   "hive_swarm_list",
   "List all swarms with optional filters",
   {
-    status: z.enum(["buzzing", "paused", "blocked", "completed", "failed", "cancelled"]).optional().describe("Filter by status"),
+    status: z.enum(["buzzing", "paused", "blocked", "completed", "failed", "cancelled", "scheduled", "queued"]).optional().describe("Filter by status"),
     limit: z.number().optional().describe("Max number of swarms to return"),
   },
   async ({ status, limit }) => {
@@ -326,13 +359,14 @@ server.tool(
 
 server.tool(
   "hive_flight_fail",
-  "Mark a flight as failed with an error message",
+  "Mark a flight as failed with an error message and optional context",
   {
     flight_id: z.string().describe("The flight UUID that failed"),
     error: z.string().describe("Error message describing the failure"),
+    context: z.string().optional().describe("Optional additional context (bee output, stack traces)"),
   },
-  async ({ flight_id, error }) => {
-    const result = failFlight(flight_id, error);
+  async ({ flight_id, error, context }) => {
+    const result = failFlight(flight_id, error, context);
     if (!result.success) {
       return { content: [{ type: "text", text: result.error }], isError: true };
     }
@@ -514,6 +548,545 @@ server.tool(
   },
 );
 
+// ── Snapshot Tools ───────────────────────────────────────────────────
+
+server.tool(
+  "hive_snapshot_create",
+  "Export full swarm state (nectar, flights, cells, outputs) as a JSON snapshot",
+  { swarm_id: z.string().describe("The swarm ID to snapshot") },
+  errorBoundary(async ({ swarm_id }) => {
+    const result = createSnapshot(swarm_id);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify({ message: "Snapshot created", snapshot_id: result.snapshot.id, type: result.snapshot.snapshot_type }, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_snapshot_list",
+  "List snapshots for a swarm",
+  { swarm_id: z.string().describe("The swarm ID") },
+  errorBoundary(async ({ swarm_id }) => {
+    const result = listSnapshots(swarm_id);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.snapshots.map(s => ({ id: s.id, type: s.snapshot_type, created_at: s.created_at })), null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_snapshot_restore",
+  "Restore swarm to a snapshot state (reset flights, cells, nectar)",
+  { snapshot_id: z.string().describe("The snapshot ID to restore") },
+  errorBoundary(async ({ snapshot_id }) => {
+    const result = restoreSnapshot(snapshot_id);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_checkpoint_create",
+  "Create a checkpoint snapshot for a swarm",
+  { swarm_id: z.string().describe("The swarm ID") },
+  errorBoundary(async ({ swarm_id }) => {
+    const result = createCheckpoint(swarm_id);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify({ message: "Checkpoint created", snapshot_id: result.snapshot.id }, null, 2) }] };
+  }),
+);
+
+// ── Trace Tools ─────────────────────────────────────────────────────
+
+server.tool(
+  "hive_flight_trace",
+  "View structured execution traces for a flight or entire swarm",
+  {
+    flight_id: z.string().optional().describe("Specific flight UUID to trace"),
+    swarm_id: z.string().optional().describe("Swarm ID to get all traces"),
+  },
+  errorBoundary(async ({ flight_id, swarm_id }) => {
+    if (flight_id) {
+      const result = getFlightTraces(flight_id);
+      if (!result.success) {
+        return { content: [{ type: "text" as const, text: result.error }], isError: true };
+      }
+      return { content: [{ type: "text" as const, text: JSON.stringify(result.traces, null, 2) }] };
+    }
+    if (swarm_id) {
+      const result = getSwarmTraces(swarm_id);
+      if (!result.success) {
+        return { content: [{ type: "text" as const, text: result.error }], isError: true };
+      }
+      return { content: [{ type: "text" as const, text: JSON.stringify(result.traces, null, 2) }] };
+    }
+    return { content: [{ type: "text" as const, text: "Provide either flight_id or swarm_id" }], isError: true };
+  }),
+);
+
+// ── Notification Tools ──────────────────────────────────────────────
+
+server.tool(
+  "hive_notification_config",
+  "Get or set global notification configuration (webhook URL, enabled events, payload format)",
+  {
+    url: z.string().optional().describe("Webhook URL to set"),
+    events: z.array(z.string()).optional().describe("Event types to enable (e.g. swarm.completed, flight.failed)"),
+    format: z.enum(["standard", "slack", "discord"]).optional().describe("Payload format"),
+  },
+  errorBoundary(async ({ url, events, format }) => {
+    if (url !== undefined || events !== undefined || format !== undefined) {
+      const result = setConfig({
+        url,
+        events: events as HiveEventType[] | undefined,
+        format,
+      });
+      if (!result.success) {
+        return { content: [{ type: "text" as const, text: result.error }], isError: true };
+      }
+      return { content: [{ type: "text" as const, text: JSON.stringify({ message: "Configuration updated", config: result.config }, null, 2) }] };
+    }
+    const result = getConfig();
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.config, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_notification_test",
+  "Send a test webhook to the configured URL and report success/failure",
+  {
+    url: z.string().optional().describe("Override URL to test (uses global config URL if not provided)"),
+  },
+  errorBoundary(async ({ url }) => {
+    const configResult = getConfig();
+    const globalConfig = configResult.success ? configResult.config : null;
+    const targetUrl = url ?? globalConfig?.default_url;
+    if (!targetUrl) {
+      return { content: [{ type: "text" as const, text: "No webhook URL configured. Set one with hive_notification_config first." }], isError: true };
+    }
+
+    const format = globalConfig?.format ?? "standard";
+    const { formatPayload } = await import("./notification/format.js");
+    const testEvent = {
+      id: "test-event",
+      event_type: "swarm.completed",
+      swarm_id: "test-swarm-id",
+      payload: JSON.stringify({ reason: "test_webhook" }),
+      created_at: new Date().toISOString(),
+    };
+    const payload = formatPayload(testEvent, format as "standard" | "slack" | "discord");
+
+    try {
+      const response = await fetch(targetUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(10_000),
+      });
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            success: response.ok,
+            url: targetUrl,
+            status: response.status,
+            format,
+          }, null, 2),
+        }],
+      };
+    } catch (err) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            success: false,
+            url: targetUrl,
+            error: err instanceof Error ? err.message : String(err),
+          }, null, 2),
+        }],
+        isError: true,
+      };
+    }
+  }),
+);
+
+server.tool(
+  "hive_notification_history",
+  "View webhook delivery history with optional status filter",
+  {
+    status: z.enum(["pending", "delivered", "failed"]).optional().describe("Filter by delivery status"),
+    limit: z.number().optional().describe("Max number of deliveries to return (default 20)"),
+  },
+  errorBoundary(async ({ status, limit }) => {
+    const deliveries = db.listWebhookDeliveries({ status, limit: limit ?? 20 });
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify(deliveries.map(d => ({
+          id: d.id,
+          event_id: d.event_id,
+          url: d.url,
+          status: d.status,
+          attempts: d.attempts,
+          max_attempts: d.max_attempts,
+          last_error: d.last_error,
+          created_at: d.created_at,
+        })), null, 2),
+      }],
+    };
+  }),
+);
+
+server.tool(
+  "hive_notification_retry",
+  "Retry failed webhook deliveries (specific delivery or all failed)",
+  {
+    delivery_id: z.string().optional().describe("Specific delivery ID to retry (retries all failed if omitted)"),
+  },
+  errorBoundary(async ({ delivery_id }) => {
+    if (delivery_id) {
+      const result = await retryDelivery(delivery_id);
+      if (!result.success) {
+        return { content: [{ type: "text" as const, text: result.error! }], isError: true };
+      }
+      return { content: [{ type: "text" as const, text: JSON.stringify({ message: "Delivery retried", success: result.success }) }] };
+    }
+    const result = await retryAllFailed();
+    return { content: [{ type: "text" as const, text: JSON.stringify({ message: `Retried ${result.retried} deliveries, ${result.succeeded} succeeded` }, null, 2) }] };
+  }),
+);
+
+// ── Chain Tools ─────────────────────────────────────────────────────
+
+server.tool(
+  "hive_chain_status",
+  "View all swarms in a chain with parent-child relationships and status",
+  { chain_id: z.string().describe("The chain ID to inspect") },
+  errorBoundary(async ({ chain_id }) => {
+    const result = getChainStatus(chain_id);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.data, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_chain_list",
+  "List all chains with optional status filter",
+  {
+    status: z.enum(["active", "completed", "failed"]).optional().describe("Filter by chain status"),
+  },
+  errorBoundary(async ({ status }) => {
+    const result = listChainsQuery(status);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.chains, null, 2) }] };
+  }),
+);
+
+// ── Blueprint Ecosystem Tools ───────────────────────────────────────
+
+server.tool(
+  "hive_blueprint_scaffold",
+  "Generate a new blueprint directory with skeleton YAML and bee identity files",
+  {
+    blueprint_id: z.string().describe("Blueprint ID (lowercase, hyphens allowed)"),
+    location: z.enum(["project", "global"]).optional().describe("Where to create (default: project-local)"),
+  },
+  errorBoundary(async ({ blueprint_id, location }) => {
+    const result = scaffoldBlueprint(blueprint_id, { location });
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify({ message: result.message, directory: result.dir }, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_blueprint_validate",
+  "Validate a blueprint against schema plus semantic checks (nectar reachability, role consistency, cycle detection)",
+  { blueprint_id: z.string().describe("The blueprint ID to validate") },
+  errorBoundary(async ({ blueprint_id }) => {
+    const result = validateBlueprint(blueprint_id);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify({ valid: result.valid, issues: result.issues }, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_blueprint_dryrun",
+  "Simulate pipeline execution without spawning bees — shows flight order, dependency graph, and template resolution preview",
+  {
+    blueprint_id: z.string().describe("The installed blueprint ID to simulate"),
+    variables: z.record(z.string(), z.string()).optional().describe("Optional variables for template preview"),
+  },
+  errorBoundary(async ({ blueprint_id, variables }) => {
+    const result = dryRunBlueprint(blueprint_id, variables);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.data, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_blueprint_install_remote",
+  "Install a blueprint from a Git repo URL (shallow clone, validate, copy to blueprints directory)",
+  {
+    url: z.string().describe("Git repository URL to clone"),
+    subdirectory: z.string().optional().describe("Subdirectory within the repo containing the blueprint"),
+  },
+  errorBoundary(async ({ url, subdirectory }) => {
+    const result = installRemoteBlueprint(url, { subdirectory });
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify({ message: result.message, blueprint_id: result.blueprint_id }, null, 2) }] };
+  }),
+);
+
+// ── Phase 11: Pulse Tools ───────────────────────────────────────────
+
+server.tool(
+  "hive_flight_pulse",
+  "Report incremental progress during a flight (step label, progress 0.0-1.0, message)",
+  {
+    flight_id: z.string().describe("The flight UUID to report progress on"),
+    step: z.string().describe("Short label for current step (e.g., 'analyzing', 'implementing', 'testing')"),
+    progress: z.number().min(0).max(1).describe("Progress fraction from 0.0 to 1.0"),
+    message: z.string().optional().describe("Optional progress message with details"),
+  },
+  errorBoundary(async ({ flight_id, step, progress, message }) => {
+    const result = reportPulse(flight_id, step, progress, message);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify({ recorded: true, step, progress }) }] };
+  }),
+);
+
+server.tool(
+  "hive_flight_progress",
+  "Get latest pulses for a flight or all active flights in a swarm",
+  {
+    flight_id: z.string().optional().describe("Specific flight UUID"),
+    swarm_id: z.string().optional().describe("Swarm ID to get all active flight pulses"),
+  },
+  errorBoundary(async ({ flight_id, swarm_id }) => {
+    const result = getFlightProgress({ flight_id, swarm_id });
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.flights, null, 2) }] };
+  }),
+);
+
+// ── Phase 11: Usage Tools ──────────────────────────────────────────
+
+server.tool(
+  "hive_swarm_usage",
+  "Get token/cost breakdown for a swarm by bee, flight, and totals",
+  { swarm_id: z.string().describe("The swarm ID to get usage for") },
+  errorBoundary(async ({ swarm_id }) => {
+    const result = getSwarmUsage(swarm_id);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.data, null, 2) }] };
+  }),
+);
+
+// ── Phase 11: Bee Stats Tools ──────────────────────────────────────
+
+server.tool(
+  "hive_bee_stats",
+  "Get historical performance stats for a bee or all bees in a blueprint",
+  {
+    bee_id: z.string().optional().describe("Specific qualified bee ID (e.g., feature-dev_worker)"),
+    blueprint_id: z.string().optional().describe("Blueprint ID to filter by"),
+  },
+  errorBoundary(async ({ bee_id, blueprint_id }) => {
+    const result = getBeeStatsQuery(bee_id, blueprint_id);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.stats, null, 2) }] };
+  }),
+);
+
+// ── Phase 12: Queue, Archive, Report, Storage, Config Tools ─────────
+
+server.tool(
+  "hive_queue_status",
+  "Get queue depth, active flights per bee, concurrency utilization, and queued swarms",
+  {},
+  errorBoundary(async () => {
+    const status = getQueueStatus();
+    return { content: [{ type: "text" as const, text: JSON.stringify(status, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_swarm_archive",
+  "Archive a completed/failed/cancelled swarm to compressed storage and delete originals",
+  { swarm_id: z.string().describe("The swarm ID to archive") },
+  errorBoundary(async ({ swarm_id }) => {
+    const result = archiveSwarm(swarm_id);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify({ message: result.message, archive_id: result.archive_id }, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_swarm_report",
+  "Generate a structured JSON + markdown report for a swarm with timeline, cells, nectar, and analytics",
+  {
+    swarm_id: z.string().describe("The swarm ID to report on"),
+    format: z.enum(["json", "markdown", "both"]).optional().describe("Output format (default: both)"),
+  },
+  errorBoundary(async ({ swarm_id, format }) => {
+    const result = generateSwarmReport(swarm_id);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    const fmt = format ?? "both";
+    if (fmt === "json") {
+      return { content: [{ type: "text" as const, text: JSON.stringify(result.report, null, 2) }] };
+    }
+    if (fmt === "markdown") {
+      return { content: [{ type: "text" as const, text: result.markdown }] };
+    }
+    return { content: [{ type: "text" as const, text: result.markdown + "\n\n---\n\n```json\n" + JSON.stringify(result.report, null, 2) + "\n```" }] };
+  }),
+);
+
+server.tool(
+  "hive_storage_status",
+  "Get DB file size, table counts, retention status, and archivable swarm count",
+  {},
+  errorBoundary(async () => {
+    const status = getStorageStatus();
+    return { content: [{ type: "text" as const, text: JSON.stringify(status, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_config",
+  "Get or set global configuration (concurrency limits, retention, defaults)",
+  {
+    key: z.string().optional().describe("Config key to get/set (omit to list all)"),
+    value: z.string().optional().describe("New value to set (omit to get current value)"),
+  },
+  errorBoundary(async ({ key, value }) => {
+    if (key && value !== undefined) {
+      const result = setGlobalConfig(key, value);
+      if (!result.success) {
+        return { content: [{ type: "text" as const, text: result.error }], isError: true };
+      }
+      return { content: [{ type: "text" as const, text: JSON.stringify({ message: `Config "${key}" set to "${value}"`, ...result }, null, 2) }] };
+    }
+    const result = getGlobalConfig(key);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.config, null, 2) }] };
+  }),
+);
+
+// ── Phase 13: Replay, Fleet Metrics, Maintenance, Export/Import ──────
+
+server.tool(
+  "hive_swarm_replay",
+  "Re-run a completed/failed/cancelled swarm with same blueprint and task. Creates new independent swarm linked to original. Accepts optional overrides.",
+  {
+    swarm_id: z.string().describe("The swarm ID or number to replay"),
+    task: z.string().optional().describe("Override the original task description"),
+    variables: z.record(z.string(), z.string()).optional().describe("Override input variables"),
+    priority: z.number().int().min(1).max(10).optional().describe("Override priority (1-10)"),
+    reset_nectar: z.boolean().optional().describe("Start with clean nectar (ignore original nectar values)"),
+  },
+  errorBoundary(async ({ swarm_id, task, variables, priority, reset_nectar }) => {
+    const result = replaySwarm(swarm_id, { task, variables, priority, reset_nectar });
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_fleet_metrics",
+  "Get aggregate statistics across all swarms: success rates, durations, blueprint popularity, daily trends, top bees. Covers configurable time window.",
+  {
+    period: z.enum(["7d", "30d", "90d", "all"]).optional().describe("Time window (default: 30d)"),
+  },
+  errorBoundary(async ({ period }) => {
+    const result = getFleetMetrics(period);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result.metrics, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_maintain",
+  "Run data maintenance to clean up old events, traces, beekeeper checks, and webhook deliveries. Respects per-table retention settings. Never deletes active swarm data.",
+  {
+    dry_run: z.boolean().optional().describe("Preview what would be deleted without actually deleting (default: false)"),
+  },
+  errorBoundary(async ({ dry_run }) => {
+    const result = runMaintenance(dry_run ?? false);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_blueprint_export",
+  "Export an installed blueprint as a portable .hive-blueprint.json package with YAML, bee identity files, and manifest.",
+  {
+    blueprint_id: z.string().describe("The blueprint ID to export"),
+    output_dir: z.string().optional().describe("Directory to write the bundle file (default: current directory)"),
+  },
+  errorBoundary(async ({ blueprint_id, output_dir }) => {
+    const result = exportBlueprint(blueprint_id, output_dir);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  }),
+);
+
+server.tool(
+  "hive_blueprint_import",
+  "Import a blueprint from a .hive-blueprint.json package file. Validates manifest and schema before installing.",
+  {
+    path: z.string().describe("Path to the .hive-blueprint.json file"),
+  },
+  errorBoundary(async ({ path }) => {
+    const result = importBlueprint(path);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  }),
+);
+
 // ── Observatory Tools ────────────────────────────────────────────────
 
 server.tool(
@@ -677,6 +1250,127 @@ server.resource(
           current_stuck_flights: stuck.length,
           current_stalled_swarms: stalled.length,
         }, null, 2),
+      }],
+    };
+  },
+);
+
+// ── Phase 11: Resource Templates ────────────────────────────────────
+
+server.resource(
+  "swarm-pulses",
+  new ResourceTemplate("hive://swarm/{id}/pulses", {
+    list: async () => {
+      const buzzing = db.listSwarms({ status: "buzzing" });
+      return {
+        resources: buzzing.map(s => ({
+          uri: `hive://swarm/${s.id}/pulses`,
+          name: `Swarm #${s.swarm_number} pulses`,
+        })),
+      };
+    },
+  }),
+  async (uri, variables) => {
+    const id = String(variables.id);
+    const swarm = db.findSwarm(id);
+    if (!swarm) {
+      return { contents: [{ uri: uri.href, text: JSON.stringify({ error: "Swarm not found" }) }] };
+    }
+    const pulses = db.getPulsesForSwarm(swarm.id);
+    return { contents: [{ uri: uri.href, text: JSON.stringify(pulses, null, 2) }] };
+  },
+);
+
+server.resource(
+  "swarm-usage",
+  new ResourceTemplate("hive://swarm/{id}/usage", {
+    list: async () => {
+      const all = db.listSwarms({ limit: 20 });
+      return {
+        resources: all.map(s => ({
+          uri: `hive://swarm/${s.id}/usage`,
+          name: `Swarm #${s.swarm_number} usage`,
+        })),
+      };
+    },
+  }),
+  async (uri, variables) => {
+    const id = String(variables.id);
+    const swarm = db.findSwarm(id);
+    if (!swarm) {
+      return { contents: [{ uri: uri.href, text: JSON.stringify({ error: "Swarm not found" }) }] };
+    }
+    const usage = db.getUsageForSwarm(swarm.id);
+    return { contents: [{ uri: uri.href, text: JSON.stringify(usage, null, 2) }] };
+  },
+);
+
+server.resource(
+  "swarm-events",
+  new ResourceTemplate("hive://swarm/{id}/events", {
+    list: async () => {
+      const buzzing = db.listSwarms({ status: "buzzing" });
+      return {
+        resources: buzzing.map(s => ({
+          uri: `hive://swarm/${s.id}/events`,
+          name: `Swarm #${s.swarm_number} events`,
+        })),
+      };
+    },
+  }),
+  async (uri, variables) => {
+    const id = String(variables.id);
+    const swarm = db.findSwarm(id);
+    if (!swarm) {
+      return { contents: [{ uri: uri.href, text: JSON.stringify({ error: "Swarm not found" }) }] };
+    }
+    const events = db.getEventsForSwarm(swarm.id, 50);
+    return { contents: [{ uri: uri.href, text: JSON.stringify(events, null, 2) }] };
+  },
+);
+
+server.resource(
+  "swarm-flights",
+  new ResourceTemplate("hive://swarm/{id}/flights", {
+    list: async () => {
+      const buzzing = db.listSwarms({ status: "buzzing" });
+      return {
+        resources: buzzing.map(s => ({
+          uri: `hive://swarm/${s.id}/flights`,
+          name: `Swarm #${s.swarm_number} flights`,
+        })),
+      };
+    },
+  }),
+  async (uri, variables) => {
+    const id = String(variables.id);
+    const swarm = db.findSwarm(id);
+    if (!swarm) {
+      return { contents: [{ uri: uri.href, text: JSON.stringify({ error: "Swarm not found" }) }] };
+    }
+    const flights = db.getFlightsForSwarm(swarm.id);
+    const detailed = flights.map(f => ({
+      id: f.flight_id,
+      bee: f.bee_id,
+      status: f.status,
+      type: f.type,
+      started_at: f.started_at,
+      completed_at: f.completed_at,
+      retry_count: f.retry_count,
+    }));
+    return { contents: [{ uri: uri.href, text: JSON.stringify(detailed, null, 2) }] };
+  },
+);
+
+server.resource(
+  "bee-stats",
+  "hive://bees/stats",
+  async () => {
+    const stats = db.getAllBeeStats();
+    return {
+      contents: [{
+        uri: "hive://bees/stats",
+        text: JSON.stringify(stats, null, 2),
       }],
     };
   },

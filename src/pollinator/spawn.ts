@@ -23,7 +23,7 @@ export function getToolsForRole(role: BeeRole): ToolConfig {
       return {
         tools: [
           "Read", "Glob", "Grep", "WebSearch", "WebFetch",
-          "hive_flight_complete", "hive_flight_fail",
+          "hive_flight_complete", "hive_flight_fail", "hive_flight_pulse",
         ],
         disallowedTools: ["Edit", "Write", "Bash", "NotebookEdit"],
       };
@@ -31,7 +31,7 @@ export function getToolsForRole(role: BeeRole): ToolConfig {
       return {
         tools: [
           "Read", "Glob", "Grep", "Edit", "Write", "Bash",
-          "hive_flight_complete", "hive_flight_fail",
+          "hive_flight_complete", "hive_flight_fail", "hive_flight_pulse",
         ],
         disallowedTools: [],
       };
@@ -39,7 +39,7 @@ export function getToolsForRole(role: BeeRole): ToolConfig {
       return {
         tools: [
           "Read", "Glob", "Grep", "Bash",
-          "hive_flight_complete", "hive_flight_fail",
+          "hive_flight_complete", "hive_flight_fail", "hive_flight_pulse",
         ],
         disallowedTools: ["Edit", "Write"],
       };
@@ -47,7 +47,7 @@ export function getToolsForRole(role: BeeRole): ToolConfig {
       return {
         tools: [
           "Read", "Glob", "Grep", "Bash",
-          "hive_flight_complete", "hive_flight_fail",
+          "hive_flight_complete", "hive_flight_fail", "hive_flight_pulse",
         ],
         disallowedTools: ["Edit", "Write"],
       };
@@ -55,7 +55,7 @@ export function getToolsForRole(role: BeeRole): ToolConfig {
       return {
         tools: [
           "Read", "Glob", "Grep", "Edit", "Write", "Bash",
-          "hive_flight_complete", "hive_flight_fail",
+          "hive_flight_complete", "hive_flight_fail", "hive_flight_pulse",
         ],
         disallowedTools: [],
       };
@@ -63,7 +63,7 @@ export function getToolsForRole(role: BeeRole): ToolConfig {
       return {
         tools: [
           "Read", "Glob", "Grep", "Bash",
-          "hive_flight_complete", "hive_flight_fail",
+          "hive_flight_complete", "hive_flight_fail", "hive_flight_pulse",
         ],
         disallowedTools: ["Edit", "Write"],
       };
@@ -115,6 +115,12 @@ export function buildBeePrompt(
   // Expected output format
   sections.push(`\n## Expected Output Format\n`);
   sections.push(claimResult.expects);
+
+  // Progress reporting
+  sections.push(`\n## Progress Reporting\n`);
+  sections.push(
+    `For long-running tasks, periodically call \`hive_flight_pulse\` with flight_id \`${claimResult.flight_id}\`, a step label, progress (0.0–1.0), and an optional message.`,
+  );
 
   // Completion instructions
   sections.push(`\n## Completion\n`);

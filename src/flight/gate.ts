@@ -1,6 +1,7 @@
 import * as db from "../db.js";
 import { emitEvent } from "../lib/events.js";
 import { logger } from "../lib/logger.js";
+import { checkpointOnTransition } from "../snapshot/checkpoint.js";
 
 export type ApproveFlightResult =
   | { success: true; message: string }
@@ -34,6 +35,7 @@ export function approveFlight(flightId: string, message?: string): ApproveFlight
     payload: { flight_id: flight.flight_id, approved: true, message: message ?? null },
   });
 
+  checkpointOnTransition(flight.swarm_id, "gate_approval");
   logger.info("Flight gate approved", { flightId: flight.flight_id, message });
   return { success: true, message: `Flight "${flight.flight_id}" approved and promoted to pending` };
 }

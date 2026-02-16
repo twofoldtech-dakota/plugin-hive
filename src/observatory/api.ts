@@ -1,9 +1,14 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import * as db from "../db.js";
 import { DASHBOARD_HTML } from "./dashboard.js";
+import { getQueueStatus } from "../concurrency/queue-status.js";
+import { getStorageStatus } from "../archive/storage.js";
+import { generateSwarmReport } from "../report/generate.js";
+import { getChainStatus, listChains as listChainsQuery } from "../chain/status.js";
+import { getFleetMetrics } from "../metrics/fleet.js";
 import type { SwarmStatus } from "../types.js";
 
-const VALID_SWARM_STATUSES = new Set<string>(["buzzing", "paused", "blocked", "completed", "failed", "cancelled"]);
+const VALID_SWARM_STATUSES = new Set<string>(["buzzing", "paused", "blocked", "completed", "failed", "cancelled", "scheduled", "queued"]);
 
 /**
  * Handle an incoming HTTP request for the Observatory API.
@@ -51,6 +56,49 @@ export function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       const flightDurations = db.getFlightDurations(swarm.id);
       const cellDurations = db.getCellDurations(swarm.id);
       json(res, { swarm_id: swarm.id, flights: flightDurations, cells: cellDurations });
+      return;
+    }
+
+    // GET /api/swarms/:id/report
+    const reportMatch = path.match(/^\/api\/swarms\/([^/]+)\/report$/);
+    if (reportMatch && req.method === "GET") {
+      const swarm = db.findSwarm(reportMatch[1]);
+      if (!swarm) {
+        notFound(res, "Swarm not found");
+        return;
+      }
+      const result = generateSwarmReport(swarm.id);
+      if (!result.success) {
+        json(res, { error: result.error });
+        return;
+      }
+      json(res, { report: result.report, markdown: result.markdown });
+      return;
+    }
+
+    // GET /api/swarms/:id/traces
+    const tracesMatch = path.match(/^\/api\/swarms\/([^/]+)\/traces$/);
+    if (tracesMatch && req.method === "GET") {
+      const swarm = db.findSwarm(tracesMatch[1]);
+      if (!swarm) {
+        notFound(res, "Swarm not found");
+        return;
+      }
+      const traces = db.getTracesForSwarm(swarm.id);
+      json(res, traces);
+      return;
+    }
+
+    // GET /api/swarms/:id/snapshots
+    const snapshotsMatch = path.match(/^\/api\/swarms\/([^/]+)\/snapshots$/);
+    if (snapshotsMatch && req.method === "GET") {
+      const swarm = db.findSwarm(snapshotsMatch[1]);
+      if (!swarm) {
+        notFound(res, "Swarm not found");
+        return;
+      }
+      const snapshots = db.getSnapshotsForSwarm(swarm.id);
+      json(res, snapshots.map(s => ({ id: s.id, type: s.snapshot_type, created_at: s.created_at })));
       return;
     }
 
@@ -112,6 +160,108 @@ export function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     if (path === "/api/beekeeper/checks" && req.method === "GET") {
       const checks = db.getRecentBeekeeperChecks(20);
       json(res, checks);
+      return;
+    }
+
+    // GET /api/swarms/:id/pulses
+    const pulsesMatch = path.match(/^\/api\/swarms\/([^/]+)\/pulses$/);
+    if (pulsesMatch && req.method === "GET") {
+      const swarm = db.findSwarm(pulsesMatch[1]);
+      if (!swarm) {
+        notFound(res, "Swarm not found");
+        return;
+      }
+      const pulses = db.getPulsesForSwarm(swarm.id);
+      json(res, pulses);
+      return;
+    }
+
+    // GET /api/swarms/:id/usage
+    const usageMatch = path.match(/^\/api\/swarms\/([^/]+)\/usage$/);
+    if (usageMatch && req.method === "GET") {
+      const swarm = db.findSwarm(usageMatch[1]);
+      if (!swarm) {
+        notFound(res, "Swarm not found");
+        return;
+      }
+      const usage = db.getUsageForSwarm(swarm.id);
+      json(res, usage);
+      return;
+    }
+
+    // GET /api/bees/stats
+    if (path === "/api/bees/stats" && req.method === "GET") {
+      const stats = db.getAllBeeStats();
+      json(res, stats);
+      return;
+    }
+
+    // ── Phase 13: New API endpoints ───────────────────────────────────
+
+    // GET /api/queue
+    if (path === "/api/queue" && req.method === "GET") {
+      json(res, getQueueStatus());
+      return;
+    }
+
+    // GET /api/archives
+    if (path === "/api/archives" && req.method === "GET") {
+      json(res, db.listSwarmArchives());
+      return;
+    }
+
+    // GET /api/archives/:id
+    const archiveMatch = path.match(/^\/api\/archives\/([^/]+)$/);
+    if (archiveMatch && req.method === "GET") {
+      const archive = db.getSwarmArchive(archiveMatch[1]);
+      if (!archive) {
+        notFound(res, "Archive not found");
+        return;
+      }
+      json(res, archive);
+      return;
+    }
+
+    // GET /api/config
+    if (path === "/api/config" && req.method === "GET") {
+      json(res, db.getAllHiveConfig());
+      return;
+    }
+
+    // GET /api/storage
+    if (path === "/api/storage" && req.method === "GET") {
+      json(res, getStorageStatus());
+      return;
+    }
+
+    // GET /api/chains
+    if (path === "/api/chains" && req.method === "GET") {
+      const result = listChainsQuery();
+      json(res, result.success ? result.chains : []);
+      return;
+    }
+
+    // GET /api/chains/:id
+    const chainMatch = path.match(/^\/api\/chains\/([^/]+)$/);
+    if (chainMatch && req.method === "GET") {
+      const result = getChainStatus(chainMatch[1]);
+      if (!result.success) {
+        notFound(res, result.error);
+        return;
+      }
+      json(res, result.data);
+      return;
+    }
+
+    // GET /api/metrics/fleet
+    if (path === "/api/metrics/fleet" && req.method === "GET") {
+      const period = url.searchParams.get("period") ?? "30d";
+      const result = getFleetMetrics(period);
+      if (!result.success) {
+        json(res, { error: result.error });
+        return;
+      }
+      json(res, result.metrics);
       return;
     }
 

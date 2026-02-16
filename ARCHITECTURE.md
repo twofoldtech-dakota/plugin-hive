@@ -1593,3 +1593,461 @@ Template filters extending `{{key}}` syntax: `{{key|default:fallback}}`, `{{key|
 | `hive_swarm_analytics` | Performance analytics for a swarm |
 
 *This architecture document is the foundation for building Plugin Hive. Each section maps directly to implementation work in the phased plan above.*
+
+---
+
+## Phase 10: Blueprint Ecosystem, Swarm Chaining, Notifications & Resilience
+
+### 10.1 Custom Blueprint Authoring & Ecosystem
+
+Users can now create, validate, simulate, and install blueprints from external sources.
+
+**New MCP Tools:**
+| Tool | Description |
+|------|-------------|
+| `hive_blueprint_scaffold` | Generate a new blueprint directory with skeleton YAML and bee identity files |
+| `hive_blueprint_validate` | Validate blueprint against schema plus semantic checks (nectar reachability, role consistency, trigger validity) |
+| `hive_blueprint_dryrun` | Simulate pipeline execution — shows flight order, dependency graph, template resolution preview |
+| `hive_blueprint_install_remote` | Install a blueprint from a Git repo URL (shallow clone, validate, copy) |
+
+**Blueprint Discovery:** Project-local blueprints discovered at `{projectDir}/.hive/blueprints/{id}/blueprint.yml` before installed and bundled locations.
+
+**New DB Table:** `blueprint_sources` tracks origin (bundled/local/project/git), version, and source URI for installed blueprints.
+
+### 10.2 Swarm Chaining & Triggers
+
+Blueprints can declare `triggers:` that fire new swarms on completion or failure, enabling multi-swarm workflows.
+
+**Blueprint Schema Addition:**
+```yaml
+triggers:
+  - on: swarm.completed
+    blueprint: deploy-staging
+    nectar_forward: [pr_url, files_changed]
+    task_template: "Deploy {{pr_url}} to staging"
+    variables: { environment: staging }
+    condition: "{{status}} == pass"
+```
+
+**Trigger Execution Flow:**
+1. On swarm completion/failure, load blueprint triggers matching event type
+2. Evaluate optional `condition` against parent nectar (reuses `evaluateWhen()`)
+3. Forward specified nectar keys and resolve task template
+4. Create child swarm with `chain_id` (creating chain record if first trigger in lineage)
+
+**New MCP Tools:**
+| Tool | Description |
+|------|-------------|
+| `hive_chain_status` | View all swarms in a chain with parent-child relationships |
+| `hive_chain_list` | List all chains with status filter |
+
+**New DB Table:** `chains` with `root_swarm_id`, status, timestamps. Swarms gain `chain_id`, `parent_swarm_id`, `trigger_config` columns.
+
+**New Events:** `chain.created`, `chain.completed`, `chain.failed`, `swarm.triggered`
+
+### 10.3 Event Notifications & Webhooks
+
+Replaces fire-and-forget webhook delivery with a robust system including retries, payload formatting, and delivery history.
+
+**Webhook Delivery System:**
+1. On event emission, check swarm-level `notify_url` AND global `notification_config`
+2. Filter events against `enabled_events` list
+3. Create `webhook_deliveries` record
+4. Attempt immediate delivery; on failure, schedule retry with exponential backoff
+
+**Payload Formats:**
+- **Standard:** `{ event_type, swarm_id, payload, timestamp }`
+- **Slack:** `{ text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] }`
+- **Discord:** `{ content, embeds: [{ title, description, color, timestamp }] }`
+
+**New MCP Tools:**
+| Tool | Description |
+|------|-------------|
+| `hive_notification_config` | Get/set global notification config (URL, events, format) |
+| `hive_notification_test` | Send a test webhook and report success/failure |
+| `hive_notification_history` | View webhook delivery history with status filters |
+| `hive_notification_retry` | Retry failed deliveries (specific or all) |
+
+**New DB Tables:** `notification_config` (global URL, enabled events, format) and `webhook_deliveries` (delivery tracking with retry state).
+
+**Beekeeper Integration:** New `checkFailedWebhooks` health check and `retryWebhook` auto-remediation.
+
+### 10.4 Resilience & Debugging
+
+Flight traces, snapshots, and checkpoints provide debugging and state recovery capabilities.
+
+**Flight Trace Instrumentation:** Trace records inserted at key lifecycle points:
+- `claimed` — bee_id, resolved input length
+- `output` — output length, nectar keys produced
+- `error` — error message, context, retry count
+- `retry` — delay seconds, retry count
+
+**Snapshot System:** Full swarm state export (swarm, flights, cells, nectar) as JSON. Supports manual creation, restoration, and automatic checkpointing at configurable intervals.
+
+**Enhanced Error Context:** `hive_flight_fail` accepts optional `context` parameter for bee agent output/stack traces, stored on `flights.error_context`.
+
+**New MCP Tools:**
+| Tool | Description |
+|------|-------------|
+| `hive_snapshot_create` | Export full swarm state as JSON snapshot |
+| `hive_snapshot_list` | List snapshots for a swarm |
+| `hive_snapshot_restore` | Restore swarm to a snapshot state |
+| `hive_checkpoint_create` | Create a checkpoint (auto-checkpoint on interval) |
+| `hive_flight_trace` | View structured execution traces for a flight or swarm |
+
+**New DB Tables:** `snapshots` (state data, type) and `flight_traces` (structured trace records).
+
+### 10.5 Schema Changes Summary
+
+**New Tables (6):** chains, blueprint_sources, snapshots, flight_traces, notification_config, webhook_deliveries
+
+**New Columns:**
+- `swarms`: chain_id, parent_swarm_id, trigger_config
+- `flights`: error_context, checkpoint_data
+- `blueprints`: source_type, source_uri
+
+**Total MCP Tools:** 44 (29 from Phases 1-9 + 15 new in Phase 10)
+
+---
+
+## Phase 11: Observability & Operational Maturity
+
+### 11.1 Flight Progress Reporting (Live Pulse)
+
+Bees can report incremental progress during long-running flights via `hive_flight_pulse`. Each pulse contains a step label, a progress fraction (0.0–1.0), and an optional message. Pulses are stored in a `flight_pulses` table and ring-buffered to 20 per flight. They are deleted when a flight completes or fails.
+
+The coordinator (`/hive-drive`) reads pulses via `hive_flight_progress` while waiting for bees. The beekeeper uses pulse recency to distinguish genuinely stuck flights from merely slow ones — if a recent pulse exists within half the stuck-flight threshold, severity is downgraded to advisory. The Observatory exposes pulses via `/api/swarms/:id/pulses`.
+
+### 11.2 Resource & Token Accounting (Honey Ledger)
+
+A `flight_usage` table records token consumption per flight completion. Bees report tokens via a `TOKEN_USAGE` key in their completion output (parsed alongside existing `KEY: value` lines). When no explicit data is provided, tokens are estimated from input/output length. Aggregation via `hive_swarm_usage` produces per-bee, per-flight, and per-swarm breakdowns. Usage data is included in `hive_swarm_analytics` and surfaced in the Observatory.
+
+### 11.3 Blueprint Inheritance (Extends)
+
+Blueprints can declare `extends: base-blueprint-id` to inherit structure from a parent. The child overrides specific bees and flights by matching on `id` — matched IDs merge fields (child wins), unmatched IDs are appended. Top-level fields (polling, beekeeper, nectar, notifications, triggers) are replaced if present in the child.
+
+```yaml
+id: feature-dev-opus
+extends: feature-dev
+bees:
+  - id: worker
+    model: opus
+    timeout_seconds: 2400
+flights:
+  - id: finalize
+    gate: null
+```
+
+Inheritance is resolved at install time (max depth 5, cycle detection). The fully merged spec is stored in the database. `bees` and `flights` are optional in child blueprints when `extends` is set.
+
+### 11.4 Swarm Scheduling & Priorities
+
+`hive_swarm_start` gains optional `priority` (1–10, default 5) and `schedule_at` (ISO 8601) parameters. Scheduled swarms are created with status `scheduled` and promoted to `buzzing` by a beekeeper check when their start time arrives. Priority affects flight claim ordering — higher-priority swarm flights are claimed first.
+
+### 11.5 Bee Performance History (Hive Memory)
+
+A `bee_stats` table aggregates lifetime statistics per qualified bee ID (e.g., `feature-dev_worker`): total flights, successes, failures, average duration, total tokens consumed, and rolling success rate. Updated on every flight completion and failure via upsert. Exposed via `hive_bee_stats`. The beekeeper flags bees with success rate below 50% after 5+ flights (advisory only).
+
+### 11.6 Enhanced MCP Resources (Live Feeds)
+
+Five new MCP resources for passive monitoring without tool calls:
+
+| Resource URI | Description |
+|-------------|-------------|
+| `hive://swarm/{id}/pulses` | Live flight progress pulses |
+| `hive://swarm/{id}/usage` | Token usage breakdown |
+| `hive://swarm/{id}/events` | Event stream (last 50) |
+| `hive://swarm/{id}/flights` | Detailed flight statuses with timing |
+| `hive://bees/stats` | Aggregate bee performance stats |
+
+### 11.7 Auto-Checkpointing on State Transitions
+
+Extends the existing `maybeAutoCheckpoint()` system to fire on gate approvals, verification outcomes, swarm status transitions, and swarm cancellation. Controlled by a new `checkpoint_on_transitions: true` flag in the blueprint's `beekeeper` config (default false for backward compatibility).
+
+### 11.8 New MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `hive_flight_pulse` | Report incremental progress during a flight (step, progress 0.0–1.0, message) |
+| `hive_flight_progress` | Get latest pulses for a flight or all active flights in a swarm |
+| `hive_swarm_usage` | Get token/cost breakdown for a swarm by bee, flight, and totals |
+| `hive_bee_stats` | Get historical performance stats for a bee or all bees in a blueprint |
+
+### 11.9 Schema Changes Summary
+
+**New Tables (3):** flight_pulses, flight_usage, bee_stats
+
+**New Columns:**
+- `swarms`: priority, schedule_at
+
+**New Status:** `scheduled` added to SwarmStatus lifecycle
+
+**New Event Types (3):** `flight.pulse`, `swarm.scheduled`, `swarm.promoted`
+
+**Updated Status Lifecycle:**
+```
+Swarm:    scheduled → buzzing → paused → buzzing → completed
+                                → blocked → buzzing     ↘ failed
+                                                          ↘ cancelled
+```
+
+**Total MCP Tools:** 39 (35 from Phases 1-10 + 4 new)
+
+---
+
+## Phase 12: Queue Intelligence, Nectar Contracts, Archival & Reporting
+
+### 12.1 Concurrency Control & Queue Intelligence
+
+Swarm creation now enforces concurrency limits. When limits are exceeded, swarms enter a `queued` status and are automatically promoted when slots open.
+
+**Concurrency Enforcement (`src/concurrency/enforce.ts`):**
+- `checkConcurrency(blueprintId)` — checks global `max_concurrent_swarms` (from `hive_config`) and blueprint-level `concurrency.max_swarms`
+- `promoteQueuedSwarms()` — promotes highest-priority queued swarms when slots become available; registers promoted swarms with the scheduler
+
+**Queue Status (`src/concurrency/queue-status.ts`):**
+- `getQueueStatus()` — global utilization, per-blueprint breakdown, active flights per bee, queued swarm details
+
+**Integration Points:**
+- `swarm/create.ts` — checks concurrency before creating; sets status to `queued` if limit reached
+- `pipeline/advance.ts` — calls `promoteQueuedSwarms()` after swarm completion
+- `swarm/stop.ts` — calls `promoteQueuedSwarms()` after cancellation; allows stopping queued swarms
+- `index.ts` — `hive_swarm_start` skips scheduler registration for queued swarms
+
+**Blueprint Schema Addition:**
+```yaml
+concurrency:
+  max_swarms: 3              # Max simultaneous swarms for this blueprint
+  max_flights_per_bee: 1     # Max concurrent flights per bee
+```
+
+### 12.2 Nectar Contracts
+
+Flights can now declare `produces` and `requires` arrays specifying nectar keys they output and consume. This enables static validation and runtime warnings.
+
+**Contract Validation (`src/nectar/contracts.ts`):**
+- `validateContracts(spec)` — walks pipeline in order, verifies every `requires` key has a producer (from a prior flight's `produces`, `spec.nectar`, `spec.inputs`, or system keys)
+- `checkProducedKeys(flightId, swarmId, declaredProduces, currentNectar)` — warns at completion time if declared keys are missing from nectar (non-blocking)
+- System keys: `task, swarm_id, progress, current_cell, acceptance_criteria, completed_cells, cells_remaining, inspect_feedback, verify_cell_*`
+
+**Integration Points:**
+- `blueprint/validate.ts` — contract validation in semantic checks
+- `flight/complete.ts` — runtime produced-key check (warnings only)
+- `blueprint/dryrun.ts` — nectar flow info in dry-run output
+
+**Blueprint Schema Addition:**
+```yaml
+flights:
+  - id: decompose
+    bee: queen
+    produces: [cells_json, plan_summary]
+    requires: [task]
+    input: "..."
+```
+
+### 12.3 Global Configuration
+
+A centralized `hive_config` key-value table stores operational settings with type validation.
+
+**Configuration Layer (`src/config/global.ts`):**
+- `getGlobalConfig(key?)` — returns config entries with descriptions
+- `setGlobalConfig(key, value)` — validates key and value type
+- Helper accessors: `getConfigValue()`, `getConfigNumber()`, `getConfigBoolean()`
+
+**Valid Keys:**
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `max_concurrent_swarms` | number | 5 | Maximum simultaneous buzzing swarms |
+| `max_flights_per_bee` | number | 1 | Maximum concurrent flights per bee |
+| `retention_days` | number | 30 | Days before completed swarms are archivable |
+| `auto_archive` | boolean | false | Automatically archive old swarms via beekeeper |
+| `default_priority` | number | 5 | Default swarm priority (1-10) |
+
+### 12.4 Swarm Archival & Storage
+
+Completed swarms can be archived to compressed storage, freeing up the main database.
+
+**Archival (`src/archive/archive.ts`):**
+- `archiveSwarm(swarmId)` — validates terminal status (completed/failed/cancelled), collects full state (swarm, flights, cells, events, traces, usage, snapshots, nectar), inserts into `swarm_archives`, cascading-deletes originals, emits `swarm.archived`
+
+**Storage Status (`src/archive/storage.ts`):**
+- `getStorageStatus()` — DB file size, table row counts, oldest entries, retention settings, archivable swarm count
+
+**Beekeeper Integration:**
+- `checkAutoArchive()` — when `auto_archive=true`, flags completed/failed swarms older than `retention_days`
+- `autoArchiveSwarm()` remediation handler in `remediate.ts`
+- `checkQueuedSwarms()` — warns if any swarm queued >60 minutes
+
+### 12.5 Swarm Reporting
+
+Structured report generation for completed (or in-progress) swarms.
+
+**Report Generator (`src/report/generate.ts`):**
+- `generateSwarmReport(swarmId)` — returns `{ report: SwarmReport, markdown: string }`
+- Report contents: swarm metadata, summary stats (flights/cells/duration), flight timeline with durations/produces/requires, cell results, nectar data, analytics (bottleneck, parallelism ratio, token usage)
+- `formatReportMarkdown(report)` — renders readable markdown with tables
+
+### 12.6 Schema Changes
+
+**New Tables:**
+- `hive_config` (key TEXT PK, value TEXT, updated_at TEXT) — global configuration
+- `swarm_archives` (id TEXT PK, swarm_number, blueprint_id, task, original_status, data TEXT, archived_at) — compressed swarm data
+
+**New Columns:**
+- `flights.produces TEXT` — JSON array of nectar keys this flight declares it will produce
+- `flights.requires TEXT` — JSON array of nectar keys this flight declares it needs
+
+**New SwarmStatus:** `queued` (waiting for concurrency slot)
+
+**New Events:** `swarm.queued`, `swarm.archived`
+
+**Updated Status Lifecycle:**
+```
+Swarm:    scheduled → queued → buzzing → paused → buzzing → completed
+                                       → blocked → buzzing     ↘ failed
+                                                                 ↘ cancelled
+```
+
+### 12.7 New MCP Tools
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `hive_queue_status` | Queue depth, active flights per bee, concurrency utilization | — |
+| `hive_swarm_archive` | Archive a completed/failed/cancelled swarm to compressed storage | `swarm_id` |
+| `hive_swarm_report` | Generate structured JSON + markdown report for a swarm | `swarm_id, format?` |
+| `hive_storage_status` | DB file size, table counts, retention status | — |
+| `hive_config` | Get/set global configuration (concurrency, retention, defaults) | `key?, value?` |
+
+**Total MCP Tools:** 44 (39 from Phases 1-11 + 5 new)
+
+---
+
+## Phase 13 — Fleet Operations, Replay & Lifecycle Automation
+
+Phase 13 closes operational gaps with swarm replay, fleet-level metrics, automated data maintenance, blueprint portability, and observatory completeness.
+
+### 13.1 Swarm Replay (`src/replay/replay.ts`)
+
+Re-run a completed/failed/cancelled swarm with same or overridden parameters.
+
+- `replaySwarm(swarmId, options?)` — validates terminal status, loads blueprint spec, applies overrides (task, variables, priority), calls `createSwarmFromBlueprint()`, sets `replayed_from` column on new swarm
+- For archived swarms: resolves via `getSwarmOrArchive()` which checks `swarm_archives` table
+- New swarm is fully independent — separate flights, cells, nectar
+- Emits `swarm.replayed` event linking new to original
+
+### 13.2 Fleet Metrics (`src/metrics/fleet.ts`)
+
+Aggregate statistics computed from existing tables (no new tables).
+
+- `getFleetMetrics(period?)` — accepts "7d", "30d", "90d", "all" (default "30d")
+- Returns `FleetMetrics` with:
+  - Totals: swarm count, completed, failed, cancelled, success rate
+  - Daily trend: per-day started/completed/failed counts
+  - Per-blueprint: swarm count, success rate, avg duration
+  - Top bees: from `bee_stats` table sorted by flight count
+- All data from SQL aggregations — `getSwarmCountsByStatus()`, `getDailySwarmCounts()`, `getPerBlueprintStats()`
+
+### 13.3 Data Maintenance (`src/maintenance/janitor.ts`)
+
+Cleanup engine for accumulated ephemeral data.
+
+- `runMaintenance(dryRun?)` — reads retention config from `hive_config`, deletes old data:
+  - `deleteOldEvents(days)` — events older than `event_retention_days` (default 30)
+  - `deleteOldTraces(days)` — flight traces older than `trace_retention_days` (default 14)
+  - `deleteOldChecks(days)` — beekeeper checks older than `check_retention_days` (default 7)
+  - `deleteOldWebhooks(days)` — webhook deliveries older than `webhook_retention_days` (default 14)
+  - `deleteOrphanedPulses()` — pulses for deleted swarms
+- **Safety:** never deletes data for active swarms (buzzing, paused, blocked, queued, scheduled)
+- Returns `MaintenanceResult` with per-table deletion counts
+- Emits `maintenance.completed` event; updates `hive_meta.last_maintenance_at`
+
+**Beekeeper integration:**
+- `checkMaintenance()` in `checks.ts` — if `auto_maintain=true` and last maintenance >24h ago, returns advisory
+- `autoMaintain()` in `remediate.ts` — calls `runMaintenance(false)`
+- Added to `monitor.ts` check/remediation lists
+
+### 13.4 Blueprint Export/Import (`src/blueprint/export.ts`)
+
+Package blueprints as portable JSON bundles (`.hive-blueprint.json`).
+
+**Export:** `exportBlueprint(blueprintId, outputDir?)`
+- Locates blueprint directory (project-local → installed → bundled)
+- Reads all files recursively, encodes as base64
+- Writes JSON bundle with `format_version`, `blueprint_id`, `exported_at`, `spec`, `files`
+
+**Import:** `importBlueprint(path)`
+- Reads JSON bundle, validates format_version and manifest
+- Extracts files to `~/.plugin-hive/blueprints/{id}/` (with path traversal prevention)
+- Calls `loadBlueprint()` for validation, installs via `insertBlueprint()`
+- Records source as `"package"` type in `blueprint_sources`
+
+### 13.5 Observatory Expansion (`src/observatory/api.ts`, `src/observatory/dashboard.ts`)
+
+**11 new API endpoints:**
+
+| Endpoint | Source |
+|----------|--------|
+| `GET /api/queue` | `getQueueStatus()` |
+| `GET /api/archives` | `listSwarmArchives()` |
+| `GET /api/archives/:id` | `getSwarmArchive()` |
+| `GET /api/config` | `getAllHiveConfig()` |
+| `GET /api/storage` | `getStorageStatus()` |
+| `GET /api/swarms/:id/report` | `generateSwarmReport()` |
+| `GET /api/swarms/:id/traces` | `getTracesForSwarm()` |
+| `GET /api/swarms/:id/snapshots` | `getSnapshotsForSwarm()` |
+| `GET /api/chains` | `listChains()` |
+| `GET /api/chains/:id` | `getChainStatus()` |
+| `GET /api/metrics/fleet` | `getFleetMetrics()` |
+
+**Dashboard additions:**
+- Navigation tabs: Swarms | Fleet | Archives | Config
+- Fleet view: stat cards, daily trend bars, blueprint table, top bees
+- Pulse progress bars on in-flight flight nodes
+- Usage panel with per-bee token breakdown table
+- Chain indicator badge on linked swarms
+- Archive browser with expandable detail view
+- Config view with key-value table and storage info
+- Added badge styles for `scheduled` and `queued` statuses
+
+### 13.6 Schema Changes
+
+**New column:** `swarms.replayed_from TEXT` — links replayed swarm to original
+
+**New meta key:** `last_maintenance_at` in `hive_meta`
+
+**New config keys (5):**
+- `event_retention_days` (default: 30) — days before events are maintenance-eligible
+- `trace_retention_days` (default: 14) — days before traces are maintenance-eligible
+- `check_retention_days` (default: 7) — days before beekeeper checks are maintenance-eligible
+- `webhook_retention_days` (default: 14) — days before webhook deliveries are maintenance-eligible
+- `auto_maintain` (default: false) — enable auto-maintenance during beekeeper checks
+
+**New events (2):** `swarm.replayed`, `maintenance.completed`
+
+**New blueprint source type:** `"package"` for imported bundles
+
+### 13.7 New MCP Tools
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `hive_swarm_replay` | Re-run a completed/failed/cancelled swarm | `swarm_id, task?, variables?, priority?, reset_nectar?` |
+| `hive_fleet_metrics` | Aggregate statistics across all swarms | `period?` |
+| `hive_maintain` | Run data maintenance cleanup | `dry_run?` |
+| `hive_blueprint_export` | Export blueprint as portable bundle | `blueprint_id, output_dir?` |
+| `hive_blueprint_import` | Import blueprint from bundle file | `path` |
+
+**Total MCP Tools:** 49 (44 from Phases 1-12 + 5 new)
+
+### 13.8 New Files
+
+| File | Purpose |
+|------|---------|
+| `src/replay/replay.ts` | Swarm replay logic |
+| `src/replay/replay.test.ts` | Replay tests |
+| `src/metrics/fleet.ts` | Fleet aggregate metrics |
+| `src/metrics/fleet.test.ts` | Fleet metrics tests |
+| `src/maintenance/janitor.ts` | Data cleanup engine |
+| `src/maintenance/janitor.test.ts` | Maintenance tests |
+| `src/blueprint/export.ts` | Blueprint export/import |
+| `src/blueprint/export.test.ts` | Export/import tests |

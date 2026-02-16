@@ -4,13 +4,16 @@ import { logger } from "../lib/logger.js";
 import { nowUtc } from "../lib/time.js";
 import { computeRetryDelay, computeRetryAt } from "./backoff.js";
 import { safeJsonParse } from "../lib/json.js";
+import { insertTrace } from "../trace/record.js";
+import { checkAndFireTriggers } from "../chain/trigger.js";
+import { updateBeeStats } from "../usage/bee-stats.js";
 import type { RetryStrategy } from "../types.js";
 
 export type FailFlightResult =
   | { success: true; message: string; retrying: boolean }
   | { success: false; error: string };
 
-export function failFlight(flightId: string, error: string): FailFlightResult {
+export function failFlight(flightId: string, error: string, context?: string): FailFlightResult {
   const flight = db.getFlight(flightId);
   if (!flight) {
     return { success: false, error: `Flight "${flightId}" not found` };
@@ -43,7 +46,9 @@ export function failFlight(flightId: string, error: string): FailFlightResult {
       retry_count: newRetryCount,
       current_cell_id: null,
       retry_at: retryAt,
+      error_context: context ?? null,
     });
+    insertTrace(flightId, flight.swarm_id, "retry", { error, retry_count: newRetryCount, delay_seconds: delaySeconds, context: context ?? null });
     emitEvent({ eventType: "flight.failed", swarmId: flight.swarm_id, payload: { flight_id: flight.flight_id, error, retrying: true, retry_at: retryAt } });
     const delayMsg = delaySeconds > 0 ? ` (delay: ${delaySeconds}s)` : "";
     return {
@@ -55,11 +60,23 @@ export function failFlight(flightId: string, error: string): FailFlightResult {
 
   // No retries left — fail the flight and the swarm
   const now = nowUtc();
-  db.updateFlight(flightId, { status: "failed", output: error, current_cell_id: null, completed_at: now });
+  db.updateFlight(flightId, {
+    status: "failed", output: error, current_cell_id: null, completed_at: now,
+    error_context: context ?? null,
+  });
   db.updateSwarm(flight.swarm_id, { status: "failed" });
   db.bumpEpoch();
+  db.deletePulsesForFlight(flightId);
+  const durationSec = db.getFlightElapsed(flightId) ?? 0;
+  const usage = db.getUsageForFlight(flightId);
+  const tokens = usage ? usage.input_tokens + usage.output_tokens : 0;
+  updateBeeStats(flight.bee_id, false, durationSec, tokens);
+  insertTrace(flightId, flight.swarm_id, "error", { error, context: context ?? null, retry_count: flight.retry_count });
   emitEvent({ eventType: "flight.failed", swarmId: flight.swarm_id, payload: { flight_id: flight.flight_id, error, retrying: false } });
   emitEvent({ eventType: "swarm.failed", swarmId: flight.swarm_id, payload: { reason: `Flight "${flight.flight_id}" exhausted retries` } });
+
+  // Check and fire triggers on swarm failure
+  checkAndFireTriggers(flight.swarm_id, "swarm.failed");
 
   logger.error("Flight failed permanently", { flightId, error });
   return {
