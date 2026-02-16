@@ -70,4 +70,52 @@ describe("resolveNectar", () => {
   it("handles special regex characters in values", () => {
     expect(resolveNectar("{{val}}", { val: "foo $1 bar" })).toBe("foo $1 bar");
   });
+
+  // ── Filter tests (Phase 9) ─────────────────────────────────────────
+
+  describe("filters", () => {
+    it("applies default filter when key is missing", () => {
+      expect(resolveNectar("{{missing|default:none}}", {})).toBe("none");
+    });
+
+    it("applies default filter when key is empty", () => {
+      expect(resolveNectar("{{key|default:fallback}}", { key: "" })).toBe("fallback");
+    });
+
+    it("uses actual value over default when present", () => {
+      expect(resolveNectar("{{key|default:fallback}}", { key: "real" })).toBe("real");
+    });
+
+    it("applies json filter", () => {
+      expect(resolveNectar("{{key|json}}", { key: "hello world" })).toBe('"hello world"');
+    });
+
+    it("applies json filter for missing key", () => {
+      expect(resolveNectar("{{key|json}}", {})).toBe('""');
+    });
+
+    it("applies upper filter", () => {
+      expect(resolveNectar("{{key|upper}}", { key: "hello" })).toBe("HELLO");
+    });
+
+    it("applies lower filter", () => {
+      expect(resolveNectar("{{key|lower}}", { key: "HELLO" })).toBe("hello");
+    });
+
+    it("returns placeholder for unknown filter", () => {
+      expect(resolveNectar("{{key|unknown}}", {})).toBe("{{key|unknown}}");
+    });
+
+    it("handles default with empty arg", () => {
+      expect(resolveNectar("{{key|default:}}", {})).toBe("");
+    });
+
+    it("mixes filters with regular substitution", () => {
+      const result = resolveNectar("{{a}} {{b|upper}} {{c|default:N/A}}", {
+        a: "hello",
+        b: "world",
+      });
+      expect(result).toBe("hello WORLD N/A");
+    });
+  });
 });

@@ -7,6 +7,20 @@ polling:
   model: haiku
   timeout_seconds: 120
 
+inputs:
+  - name: task
+    required: true
+    description: "The feature to implement"
+  - name: branch
+    default: "main"
+    description: "Base branch for the PR"
+
+beekeeper:
+  stuck_flight_minutes: 35
+  stalled_swarm_minutes: 30
+  verification_loop_max: 3
+  cell_stuck_minutes: 30
+
 bees:
   - id: queen
     name: "Queen Bee"
@@ -109,9 +123,10 @@ flights:
 
   - id: test
     bee: builder
+    when: "{{files_changed}}"
     input: |
       Run the full test suite and validate build integrity.
-      Changed files across all cells: {{files_changed}}
+      Changed files across all cells: {{files_changed|default:none}}
 
       Steps:
       1. Run the build process
@@ -125,12 +140,13 @@ flights:
 
   - id: finalize
     bee: worker
+    gate: approval
     input: |
       Create a pull request for the completed feature.
 
       Task: {{task}}
       Cells completed: {{completed_cells}}
-      Test results: {{test_results}}
+      Test results: {{test_results|default:skipped}}
 
       Create a clear, well-documented pull request summarizing all changes.
     expects: "PR_URL: the pull request URL"

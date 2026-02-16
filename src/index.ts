@@ -21,6 +21,9 @@ import { scheduler } from "./pollinator/scheduler.js";
 import { pollinate } from "./pollinator/poll.js";
 import { runBeekeeperCheck } from "./beekeeper/monitor.js";
 import { startObservatory, stopObservatory, getObservatoryStatus } from "./observatory/daemon.js";
+import { approveFlight } from "./flight/gate.js";
+import { getBlueprintInfo } from "./blueprint/info.js";
+import { getSwarmAnalytics } from "./swarm/analytics.js";
 import type { BlueprintSpec } from "./types.js";
 
 // ── Initialize ───────────────────────────────────────────────────────
@@ -48,8 +51,8 @@ const server = new McpServer({
 
 /** Wrap an MCP tool handler to catch unexpected errors and return isError responses */
 function errorBoundary<T>(
-  fn: (args: T) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>,
-): (args: T) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> {
+  fn: (args: T) => Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
+): (args: T) => Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
   return async (args: T) => {
     try {
       return await fn(args);
@@ -124,6 +127,21 @@ server.tool(
   },
 );
 
+server.tool(
+  "hive_blueprint_info",
+  "Get detailed blueprint information including input schema, flights, and beekeeper config",
+  { blueprint_id: z.string().describe("The blueprint ID to inspect") },
+  errorBoundary(async ({ blueprint_id }) => {
+    const result = getBlueprintInfo(blueprint_id);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(result.data, null, 2) }],
+    };
+  }),
+);
+
 // ── Swarm Tools ──────────────────────────────────────────────────────
 
 server.tool(
@@ -132,9 +150,10 @@ server.tool(
   {
     blueprint_id: z.string().describe("The blueprint ID to use"),
     task: z.string().describe("The task description for the swarm"),
+    variables: z.record(z.string(), z.string()).optional().describe("Optional input variables for the blueprint"),
   },
-  async ({ blueprint_id, task }) => {
-    const result = createSwarmFromBlueprint(blueprint_id, task);
+  async ({ blueprint_id, task, variables }) => {
+    const result = createSwarmFromBlueprint(blueprint_id, task, variables);
     if (!result.success) {
       return { content: [{ type: "text", text: result.error }], isError: true };
     }
@@ -321,6 +340,24 @@ server.tool(
   },
 );
 
+// ── Gate Tools ──────────────────────────────────────────────────────
+
+server.tool(
+  "hive_gate_approve",
+  "Approve a gated flight to unblock it and continue the swarm pipeline",
+  {
+    flight_id: z.string().describe("The flight UUID to approve"),
+    message: z.string().optional().describe("Optional approval message"),
+  },
+  errorBoundary(async ({ flight_id, message }) => {
+    const result = approveFlight(flight_id, message);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return { content: [{ type: "text" as const, text: result.message }] };
+  }),
+);
+
 // ── Pollinator Tools ────────────────────────────────────────────────
 
 server.tool(
@@ -406,6 +443,23 @@ server.tool(
       content: [{ type: "text", text: JSON.stringify({ epoch }) }],
     };
   },
+);
+
+// ── Analytics Tools ─────────────────────────────────────────────────
+
+server.tool(
+  "hive_swarm_analytics",
+  "Get performance analytics for a swarm: flight/cell durations, bottleneck, bee utilization, parallelism ratio",
+  { swarm_id: z.string().describe("The swarm ID to analyze") },
+  errorBoundary(async ({ swarm_id }) => {
+    const result = getSwarmAnalytics(swarm_id);
+    if (!result.success) {
+      return { content: [{ type: "text" as const, text: result.error }], isError: true };
+    }
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(result.data, null, 2) }],
+    };
+  }),
 );
 
 // ── Cell Tools ───────────────────────────────────────────────────────

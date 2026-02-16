@@ -2,6 +2,7 @@ import * as db from "../db.js";
 import { emitEvent } from "../lib/events.js";
 import { logger } from "../lib/logger.js";
 import { safeJsonParse } from "../lib/json.js";
+import { evaluateWhen } from "../flight/when.js";
 import type { AdvanceResult, FlightRecord } from "../types.js";
 
 /**
@@ -17,7 +18,18 @@ export function advancePipeline(swarmId: string): AdvanceResult {
   if (allDone) {
     db.updateSwarm(swarmId, { status: "completed" });
     db.bumpEpoch();
-    emitEvent({ eventType: "swarm.completed", swarmId });
+
+    // Enrich completion event with timing summary
+    const flightDurations = db.getFlightDurations(swarmId);
+    const totalSeconds = flightDurations.reduce((sum, f) => sum + (f.duration_seconds ?? 0), 0);
+    emitEvent({
+      eventType: "swarm.completed",
+      swarmId,
+      payload: {
+        flights_completed: regularFlights.length,
+        total_duration_seconds: totalSeconds,
+      },
+    });
     logger.info("Swarm completed", { swarmId });
     return { action: "completed" };
   }
@@ -37,6 +49,38 @@ export function advancePipeline(swarmId: string): AdvanceResult {
 }
 
 /**
+ * Promote a flight or gate it. Handles when-clause evaluation and gate checks.
+ * Returns: "promoted" | "skipped" | "gated"
+ */
+function promoteOrGate(flight: FlightRecord, swarmId: string): "promoted" | "skipped" | "gated" {
+  // Check when clause
+  if (flight.when_clause) {
+    const swarm = db.getSwarm(swarmId);
+    const nectar = swarm ? safeJsonParse<Record<string, string>>(swarm.nectar, {}) : {};
+    if (!evaluateWhen(flight.when_clause, nectar)) {
+      // Skip this flight
+      db.updateFlight(flight.id, { status: "done", output: "SKIPPED: when clause not met" });
+      emitEvent({ eventType: "flight.skipped", swarmId, payload: { flight_id: flight.flight_id, when_clause: flight.when_clause } });
+      logger.info("Flight skipped (when clause)", { flightId: flight.flight_id, when: flight.when_clause });
+      return "skipped";
+    }
+  }
+
+  // Check gate
+  if (flight.gate === "approval") {
+    db.updateFlight(flight.id, { status: "gated" });
+    emitEvent({ eventType: "flight.gated", swarmId, payload: { flight_id: flight.flight_id, gate: flight.gate } });
+    logger.info("Flight gated", { flightId: flight.flight_id, gate: flight.gate });
+    return "gated";
+  }
+
+  // Normal promotion
+  db.updateFlight(flight.id, { status: "pending" });
+  emitEvent({ eventType: "flight.ready", swarmId, payload: { flight_id: flight.flight_id } });
+  return "promoted";
+}
+
+/**
  * DAG mode: promote all waiting flights whose dependencies are satisfied.
  */
 function advanceDAG(swarmId: string, regularFlights: FlightRecord[]): AdvanceResult {
@@ -45,13 +89,41 @@ function advanceDAG(swarmId: string, regularFlights: FlightRecord[]): AdvanceRes
   );
 
   const advanced: string[] = [];
+  let anyGated = false;
+  let anySkipped = false;
+
   for (const flight of regularFlights) {
     if (flight.status !== "waiting") continue;
     const deps = safeJsonParse<string[]>(flight.depends_on ?? "", []);
     if (deps.length === 0 || deps.every(d => doneIds.has(d))) {
-      db.updateFlight(flight.id, { status: "pending" });
-      emitEvent({ eventType: "flight.ready", swarmId, payload: { flight_id: flight.flight_id } });
-      advanced.push(flight.flight_id);
+      const result = promoteOrGate(flight, swarmId);
+      if (result === "promoted") {
+        advanced.push(flight.flight_id);
+      } else if (result === "skipped") {
+        anySkipped = true;
+        doneIds.add(flight.flight_id); // skipped flights count as done for dependents
+      } else if (result === "gated") {
+        anyGated = true;
+      }
+    }
+  }
+
+  // If flights were skipped, recurse to pick up newly-unblocked dependents
+  if (anySkipped) {
+    const recursed = advancePipeline(swarmId);
+    if (recursed.action === "completed") return recursed;
+    if (recursed.advancedFlights) {
+      advanced.push(...recursed.advancedFlights);
+    }
+  }
+
+  // If ALL promotable flights were gated and nothing else can advance, block the swarm
+  if (anyGated && advanced.length === 0) {
+    const hasOtherActive = regularFlights.some(f =>
+      f.status === "pending" || f.status === "in_flight",
+    );
+    if (!hasOtherActive) {
+      db.updateSwarm(swarmId, { status: "blocked" });
     }
   }
 
@@ -69,18 +141,34 @@ function advanceSequential(swarmId: string, regularFlights: FlightRecord[]): Adv
   for (const flight of regularFlights) {
     if (flight.status === "waiting") {
       const prevIndex = flight.flight_index - 1;
-      if (prevIndex < 0) {
-        db.updateFlight(flight.id, { status: "pending" });
-        db.bumpEpoch();
-        emitEvent({ eventType: "flight.ready", swarmId, payload: { flight_id: flight.flight_id } });
-        return { action: "advanced", advancedFlights: [flight.flight_id] };
-      }
-      const prevFlight = regularFlights.find(f => f.flight_index === prevIndex);
-      if (prevFlight && prevFlight.status === "done") {
-        db.updateFlight(flight.id, { status: "pending" });
-        db.bumpEpoch();
-        emitEvent({ eventType: "flight.ready", swarmId, payload: { flight_id: flight.flight_id } });
-        return { action: "advanced", advancedFlights: [flight.flight_id] };
+      const canAdvance =
+        prevIndex < 0 ||
+        regularFlights.find(f => f.flight_index === prevIndex)?.status === "done";
+
+      if (canAdvance) {
+        const result = promoteOrGate(flight, swarmId);
+        if (result === "promoted") {
+          db.bumpEpoch();
+          return { action: "advanced", advancedFlights: [flight.flight_id] };
+        }
+        if (result === "skipped") {
+          db.bumpEpoch();
+          // Recurse to pick up the next flight
+          const recursed = advancePipeline(swarmId);
+          if (recursed.action === "completed") return recursed;
+          const allAdvanced = [flight.flight_id, ...(recursed.advancedFlights ?? [])];
+          return { action: "advanced", advancedFlights: allAdvanced };
+        }
+        if (result === "gated") {
+          // Block the swarm since sequential can only advance one at a time
+          const hasOtherActive = regularFlights.some(f =>
+            f.status === "pending" || f.status === "in_flight",
+          );
+          if (!hasOtherActive) {
+            db.updateSwarm(swarmId, { status: "blocked" });
+          }
+          return { action: "none" };
+        }
       }
       break;
     }

@@ -1,11 +1,16 @@
 import * as db from "../db.js";
 import { logger } from "../lib/logger.js";
+import { safeJsonParse } from "../lib/json.js";
+import { resolveBeekeeperThresholds } from "./config.js";
 import {
   checkStuckFlights,
   checkStalledSwarms,
   checkZombieSwarms,
   checkOrphanedSchedulers,
   checkExhaustedRetries,
+  checkVerificationLoops,
+  checkStuckCells,
+  checkSlowFlights,
 } from "./checks.js";
 import {
   resetStuckFlight,
@@ -13,8 +18,10 @@ import {
   resolveZombieSwarm,
   stopOrphanedScheduler,
   failExhaustedFlight,
+  forcePassCell,
+  resetStuckCell,
 } from "./remediate.js";
-import type { CheckResult, BeekeeperReport } from "../types.js";
+import type { CheckResult, BeekeeperReport, BlueprintSpec } from "../types.js";
 
 const remediationMap: Record<string, (entityId: string) => { success: boolean }> = {
   resetStuckFlight,
@@ -22,6 +29,8 @@ const remediationMap: Record<string, (entityId: string) => { success: boolean }>
   resolveZombieSwarm,
   stopOrphanedScheduler,
   failExhaustedFlight,
+  forcePassCell,
+  resetStuckCell,
 };
 
 /**
@@ -34,7 +43,21 @@ export function runBeekeeperCheck(): BeekeeperReport {
     ...checkZombieSwarms(),
     ...checkOrphanedSchedulers(),
     ...checkExhaustedRetries(),
+    ...checkSlowFlights(),
   ];
+
+  // Per-swarm checks (verification loops, stuck cells)
+  const buzzingSwarms = db.listSwarms({ status: "buzzing" });
+  for (const swarm of buzzingSwarms) {
+    const bp = db.getBlueprint(swarm.blueprint_id);
+    const spec = bp ? safeJsonParse<BlueprintSpec | null>(bp.spec, null) : null;
+    const thresholds = resolveBeekeeperThresholds(spec?.beekeeper);
+
+    allResults.push(
+      ...checkVerificationLoops(swarm.id, thresholds),
+      ...checkStuckCells(swarm.id, thresholds),
+    );
+  }
 
   let actionsTaken = 0;
   const findings: string[] = [];

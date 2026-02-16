@@ -34,12 +34,20 @@ const LoopConfigSchema = z.object({
   completion: z.literal("all_done"),
 });
 
+const RetryStrategySchema = z.object({
+  type: z.enum(["immediate", "linear", "exponential"]),
+  delay_seconds: z.number().positive().optional(),
+});
+
 const FlightSpecSchema = z.object({
   id: z.string().regex(ID_PATTERN, "Flight ID must be lowercase alphanumeric with hyphens"),
   bee: z.string().min(1),
   type: z.enum(["single", "loop"]).default("single"),
   loop: LoopConfigSchema.optional(),
   depends_on: z.array(z.string().min(1)).optional(),
+  when: z.string().optional(),
+  gate: z.enum(["approval"]).optional(),
+  retry_strategy: RetryStrategySchema.optional(),
   input: z.string().min(1),
   expects: z.string().min(1),
   max_retries: z.number().int().min(0).default(2),
@@ -48,6 +56,20 @@ const FlightSpecSchema = z.object({
 const PollingConfigSchema = z.object({
   model: z.string().optional(),
   timeout_seconds: z.number().positive().optional(),
+});
+
+const InputSpecSchema = z.object({
+  name: z.string().min(1),
+  required: z.boolean().optional(),
+  default: z.string().optional(),
+  description: z.string().optional(),
+});
+
+const BeekeeperConfigSchema = z.object({
+  stuck_flight_minutes: z.number().positive().optional(),
+  stalled_swarm_minutes: z.number().positive().optional(),
+  verification_loop_max: z.number().int().positive().optional(),
+  cell_stuck_minutes: z.number().positive().optional(),
 });
 
 export const BlueprintSpecSchema = z
@@ -65,6 +87,8 @@ export const BlueprintSpecSchema = z
         url: z.string().url().optional(),
       })
       .optional(),
+    inputs: z.array(InputSpecSchema).optional(),
+    beekeeper: BeekeeperConfigSchema.optional(),
   })
   .superRefine((blueprint, ctx) => {
     // Validate bee IDs are unique

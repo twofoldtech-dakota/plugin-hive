@@ -1,7 +1,7 @@
 ---
 name: hive-drive
 description: "Autonomously drive a Plugin Hive swarm from start to finish"
-allowed-tools: Task, TaskOutput, mcp__hive__hive_swarm_start, mcp__hive__hive_swarm_status, mcp__hive__hive_swarm_summary, mcp__hive__hive_blueprint_list, mcp__hive__hive_pollinate, mcp__hive__hive_beekeeper_check, mcp__hive__hive_check_epoch, mcp__hive__hive_swarm_list
+allowed-tools: Task, TaskOutput, mcp__hive__hive_swarm_start, mcp__hive__hive_swarm_status, mcp__hive__hive_swarm_summary, mcp__hive__hive_swarm_analytics, mcp__hive__hive_blueprint_list, mcp__hive__hive_pollinate, mcp__hive__hive_beekeeper_check, mcp__hive__hive_check_epoch, mcp__hive__hive_swarm_list, mcp__hive__hive_gate_approve
 ---
 
 # /hive-drive — Autonomous Swarm Coordinator
@@ -77,9 +77,10 @@ The core execution loop. Repeat until the swarm completes, fails, or safety limi
 **Step 5: Check swarm status**
 - Call `mcp__hive__hive_swarm_summary` with the swarm_id.
 - Report progress: flight pipeline position, cell completion ratio.
-- If swarm status is `completed`: report success and **exit loop**.
+- If swarm status is `completed`: call `mcp__hive__hive_swarm_analytics` and report success with timing summary. **Exit loop.**
 - If swarm status is `failed`: report failure and **exit loop**.
 - If swarm status is `cancelled`: report and **exit loop**.
+- If swarm status is `blocked`: Check for gated flights. Show the gated flight details and ask the user: "Approve this flight to continue? (flight: {flight_id}, gate: approval)". If the user approves, call `mcp__hive__hive_gate_approve` with the flight_id. Resume the loop.
 
 **Step 6: Safety checks**
 - If `wave >= 50`: report max waves reached, suggest `/hive-drive {number}` to continue. **Exit loop.**
@@ -110,6 +111,9 @@ Swarm #{number} completed successfully!
   Waves: {count}
   Flights: {total} completed
   Cells: {done}/{total} done
+  Total time: {duration}s
+  Bottleneck: {flight_id} ({duration}s)
+  Parallelism: {ratio}x
 ```
 
 On failure:

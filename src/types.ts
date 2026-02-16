@@ -32,15 +32,37 @@ export interface LoopConfig {
   completion: "all_done";
 }
 
+export interface RetryStrategy {
+  type: "immediate" | "linear" | "exponential";
+  delay_seconds?: number;
+}
+
 export interface FlightSpec {
   id: string;
   bee: string;
   type: "single" | "loop";
   loop?: LoopConfig;
   depends_on?: string[];
+  when?: string;
+  gate?: "approval";
+  retry_strategy?: RetryStrategy;
   input: string;
   expects: string;
   max_retries: number;
+}
+
+export interface InputSpec {
+  name: string;
+  required?: boolean;
+  default?: string;
+  description?: string;
+}
+
+export interface BeekeeperConfig {
+  stuck_flight_minutes?: number;
+  stalled_swarm_minutes?: number;
+  verification_loop_max?: number;
+  cell_stuck_minutes?: number;
 }
 
 export interface PollingConfig {
@@ -60,6 +82,8 @@ export interface BlueprintSpec {
   notifications?: {
     url?: string;
   };
+  inputs?: InputSpec[];
+  beekeeper?: BeekeeperConfig;
 }
 
 // ── Database Records ─────────────────────────────────────────────────
@@ -89,7 +113,8 @@ export type FlightStatus =
   | "pending"
   | "in_flight"
   | "done"
-  | "failed";
+  | "failed"
+  | "gated";
 
 export interface FlightRecord {
   id: string;
@@ -109,6 +134,10 @@ export interface FlightRecord {
   abandoned_count: number;
   verify_meta: string | null; // JSON string for verification flight metadata
   depends_on: string | null; // JSON string of string[] (DAG flight IDs)
+  when_clause: string | null;
+  gate: string | null; // "approval" or null
+  retry_at: string | null;
+  retry_strategy: string | null; // JSON string of RetryStrategy
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
@@ -196,6 +225,8 @@ export type HiveEventType =
   | "flight.claimed"
   | "flight.completed"
   | "flight.failed"
+  | "flight.gated"
+  | "flight.skipped"
   | "flight.inspector_created"
   | "cell.started"
   | "cell.completed"

@@ -1542,4 +1542,54 @@ A monotonic epoch counter in `hive_meta` table. Every state mutation bumps the e
 | `hive_swarm_summary` | Compact status for coordinator loop (pipeline, cells, active bees, epoch) |
 | `hive_check_epoch` | Monotonic counter for change detection |
 
+---
+
+## Phase 9: Workflow Intelligence & Production Hardening
+
+### 9.1 Conditional Flights (`when:` clause)
+
+Flights can declare `when: "{{key}}"` to skip execution based on nectar values. Three forms supported:
+- `when: "{{key}}"` — truthy (key exists and non-empty)
+- `when: "{{key}} == value"` — equality
+- `when: "{{key}} != value"` — inequality
+
+Evaluated at promotion time in `advancePipeline()`. Skipped flights marked `done` with output `SKIPPED: when clause not met`, which correctly unblocks DAG dependents.
+
+### 9.2 Flight Gates (`gate: approval`)
+
+Flights can declare `gate: approval` to pause for human confirmation. When a gated flight would be promoted, it gets status `gated` and the swarm goes `blocked`. New `hive_gate_approve` tool unblocks it. In DAG mode, only blocks if ALL promotable flights are gated; parallel flights can still advance.
+
+### 9.3 Retry Backoff
+
+Configurable per-flight via `retry_strategy: { type: exponential, delay_seconds: 30 }`. Types: `immediate` (default), `linear`, `exponential`. Stores `retry_at` on flight; claim queries filter by `WHERE retry_at IS NULL OR retry_at <= datetime('now')`.
+
+### 9.4 Swarm Input Schema
+
+Blueprints declare required/optional variables: `inputs: [{ name: task, required: true }]`. Validated at swarm start. New `variables` param on `hive_swarm_start`. New `hive_blueprint_info` tool exposes input metadata.
+
+### 9.5 Enhanced Beekeeper
+
+Three new checks added to the health monitor:
+1. **Verification loop detection** — cells retried N+ times still pending (configurable threshold)
+2. **Cell stuck detection** — cells in_progress beyond threshold
+3. **Slow flight advisory** — flights approaching timeout (warning only)
+
+Thresholds configurable per-blueprint via `beekeeper:` section in YAML.
+
+### 9.6 Performance Analytics
+
+New `hive_swarm_analytics` tool exposing: flight durations, cell durations, bottleneck identification, bee utilization, and parallelism ratio. Also enriches `swarm.completed` event with timing summary.
+
+### 9.7 Nectar Transforms
+
+Template filters extending `{{key}}` syntax: `{{key|default:fallback}}`, `{{key|json}}`, `{{key|upper}}`, `{{key|lower}}`. Backward-compatible regex extension.
+
+### 9.8 New MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `hive_gate_approve` | Approve a gated flight to unblock the pipeline |
+| `hive_blueprint_info` | Get detailed blueprint info including input schema |
+| `hive_swarm_analytics` | Performance analytics for a swarm |
+
 *This architecture document is the foundation for building Plugin Hive. Each section maps directly to implementation work in the phased plan above.*

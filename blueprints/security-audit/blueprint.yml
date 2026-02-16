@@ -7,6 +7,20 @@ polling:
   model: haiku
   timeout_seconds: 120
 
+inputs:
+  - name: task
+    required: true
+    description: "The target to audit (e.g., codebase, module, or service)"
+  - name: scope
+    default: "full"
+    description: "Audit scope: full, focused, or quick"
+
+beekeeper:
+  stuck_flight_minutes: 45
+  stalled_swarm_minutes: 40
+  verification_loop_max: 3
+  cell_stuck_minutes: 35
+
 bees:
   - id: scout
     name: "Scout Bee"
@@ -52,6 +66,7 @@ flights:
     bee: scout
     input: |
       Security audit target: {{task}}
+      Audit scope: {{scope|default:full}}
 
       Perform reconnaissance on the codebase:
       1. Map the project structure and identify entry points
@@ -129,8 +144,8 @@ flights:
 
       Original target: {{task}}
       Attack surface: {{attack_surface}}
-      Vulnerabilities found: {{vulnerabilities_found}}
-      Fixes applied: {{completed_cells}}
+      Vulnerabilities found: {{vulnerabilities_found|default:0}}
+      Fixes applied: {{completed_cells|default:none}}
 
       Produce a comprehensive security report summarizing:
       1. Scope of the audit

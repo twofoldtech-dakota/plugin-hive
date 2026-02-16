@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { freshDb, seedBlueprint, seedSwarm } from "../test/helpers.js";
 import * as db from "../db.js";
-import { checkStuckFlights, checkStalledSwarms, checkZombieSwarms, checkExhaustedRetries } from "./checks.js";
+import { checkStuckFlights, checkStalledSwarms, checkZombieSwarms, checkExhaustedRetries, checkVerificationLoops, checkStuckCells, checkSlowFlights } from "./checks.js";
+import { resolveBeekeeperThresholds } from "./config.js";
 
 beforeEach(() => {
   freshDb();
@@ -64,5 +65,50 @@ describe("checkExhaustedRetries", () => {
     expect(results).toHaveLength(1);
     expect(results[0].severity).toBe("critical");
     expect(results[0].remediation).toBe("failExhaustedFlight");
+  });
+});
+
+describe("checkVerificationLoops", () => {
+  it("returns empty when no cells exceed retry threshold", () => {
+    const { swarm } = seedSwarm();
+    const thresholds = resolveBeekeeperThresholds();
+    const results = checkVerificationLoops(swarm.id, thresholds);
+    expect(results).toHaveLength(0);
+  });
+});
+
+describe("checkStuckCells", () => {
+  it("returns empty when no stuck cells", () => {
+    const { swarm } = seedSwarm();
+    const thresholds = resolveBeekeeperThresholds();
+    const results = checkStuckCells(swarm.id, thresholds);
+    expect(results).toHaveLength(0);
+  });
+});
+
+describe("checkSlowFlights", () => {
+  it("returns empty when no slow flights", () => {
+    const results = checkSlowFlights();
+    expect(results).toHaveLength(0);
+  });
+});
+
+describe("resolveBeekeeperThresholds", () => {
+  it("returns defaults when no config provided", () => {
+    const thresholds = resolveBeekeeperThresholds();
+    expect(thresholds.stuck_flight_minutes).toBe(35);
+    expect(thresholds.stalled_swarm_minutes).toBe(30);
+    expect(thresholds.verification_loop_max).toBe(3);
+    expect(thresholds.cell_stuck_minutes).toBe(30);
+  });
+
+  it("overrides with blueprint config", () => {
+    const thresholds = resolveBeekeeperThresholds({
+      stuck_flight_minutes: 45,
+      verification_loop_max: 5,
+    });
+    expect(thresholds.stuck_flight_minutes).toBe(45);
+    expect(thresholds.stalled_swarm_minutes).toBe(30); // default
+    expect(thresholds.verification_loop_max).toBe(5);
   });
 });

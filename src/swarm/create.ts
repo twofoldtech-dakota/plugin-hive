@@ -1,6 +1,7 @@
 import * as db from "../db.js";
 import { emitEvent } from "../lib/events.js";
 import { logger } from "../lib/logger.js";
+import { validateInputs } from "../blueprint/info.js";
 import type { BlueprintSpec, FlightSpec } from "../types.js";
 
 export type CreateSwarmResult =
@@ -17,14 +18,21 @@ export type CreateSwarmResult =
     }
   | { success: false; error: string };
 
-export function createSwarmFromBlueprint(blueprintId: string, task: string): CreateSwarmResult {
+export function createSwarmFromBlueprint(blueprintId: string, task: string, variables?: Record<string, string>): CreateSwarmResult {
   const bp = db.getBlueprint(blueprintId);
   if (!bp) {
     return { success: false, error: `Blueprint "${blueprintId}" is not installed. Use hive_blueprint_install first.` };
   }
 
   const spec: BlueprintSpec = JSON.parse(bp.spec);
-  const nectar: Record<string, string> = { task, ...(spec.nectar ?? {}) };
+
+  // Validate and merge input variables
+  const inputResult = validateInputs(spec, variables);
+  if (!inputResult.valid) {
+    return { success: false, error: inputResult.error };
+  }
+
+  const nectar: Record<string, string> = { task, ...(spec.nectar ?? {}), ...inputResult.merged };
   const swarm = db.createSwarm(blueprintId, task, nectar, spec.notifications?.url);
 
   // Collect flight IDs that are verify_flight templates (used dynamically, not as pipeline steps)
@@ -77,6 +85,9 @@ export function createSwarmFromBlueprint(blueprintId: string, task: string): Cre
       flight.type ?? "single",
       flight.loop ? JSON.stringify(flight.loop) : undefined,
       flight.depends_on,
+      flight.when,
+      flight.gate,
+      flight.retry_strategy ? JSON.stringify(flight.retry_strategy) : undefined,
     );
     flightIndex++;
     insertedCount++;

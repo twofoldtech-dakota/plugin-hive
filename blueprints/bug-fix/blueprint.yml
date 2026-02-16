@@ -7,6 +7,17 @@ polling:
   model: haiku
   timeout_seconds: 120
 
+inputs:
+  - name: task
+    required: true
+    description: "The bug to investigate and fix"
+
+beekeeper:
+  stuck_flight_minutes: 35
+  stalled_swarm_minutes: 30
+  verification_loop_max: 3
+  cell_stuck_minutes: 30
+
 bees:
   - id: scout
     name: "Scout Bee"
@@ -111,7 +122,7 @@ flights:
 
       Bug report: {{task}}
       Root cause: {{root_cause}}
-      Files changed: {{files_changed}}
+      Files changed: {{files_changed|default:none}}
       Fixes applied: {{completed_cells}}
 
       Validate:
@@ -124,14 +135,15 @@ flights:
 
   - id: finalize
     bee: worker
+    gate: approval
     input: |
       Create a pull request for the bug fix.
 
       Bug report: {{task}}
       Root cause: {{root_cause}}
       Fixes applied: {{completed_cells}}
-      Test results: {{test_results}}
-      Validation: {{validation}}
+      Test results: {{test_results|default:pending}}
+      Validation: {{validation|default:pending}}
 
       Create a clear PR that explains the bug, its root cause, and the fix.
     expects: "PR_URL: the pull request URL"

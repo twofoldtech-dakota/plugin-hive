@@ -170,6 +170,20 @@ function migrate(db: DatabaseSync): void {
     );
     INSERT OR IGNORE INTO hive_meta (key, value) VALUES ('epoch', '0');
   `);
+
+  // Migration: Phase 9 — when_clause, gate, retry_at, retry_strategy on flights
+  if (!cols.some(c => c.name === "when_clause")) {
+    db.exec("ALTER TABLE flights ADD COLUMN when_clause TEXT");
+  }
+  if (!cols.some(c => c.name === "gate")) {
+    db.exec("ALTER TABLE flights ADD COLUMN gate TEXT");
+  }
+  if (!cols.some(c => c.name === "retry_at")) {
+    db.exec("ALTER TABLE flights ADD COLUMN retry_at TEXT");
+  }
+  if (!cols.some(c => c.name === "retry_strategy")) {
+    db.exec("ALTER TABLE flights ADD COLUMN retry_strategy TEXT");
+  }
 }
 
 // ── Blueprints ───────────────────────────────────────────────────────
@@ -322,14 +336,17 @@ export function insertFlight(
   type: "single" | "loop" = "single",
   loopConfig?: string,
   dependsOn?: string[],
+  whenClause?: string,
+  gate?: string,
+  retryStrategy?: string,
 ): FlightRecord {
   const db = getDb();
   const id = randomUUID();
   const dependsOnJson = dependsOn && dependsOn.length > 0 ? JSON.stringify(dependsOn) : null;
   db.prepare(
-    `INSERT INTO flights (id, swarm_id, flight_id, bee_id, flight_index, input_template, expects, status, max_retries, type, loop_config, depends_on)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, swarmId, flightId, beeId, flightIndex, inputTemplate, expects, status, maxRetries, type, loopConfig ?? null, dependsOnJson);
+    `INSERT INTO flights (id, swarm_id, flight_id, bee_id, flight_index, input_template, expects, status, max_retries, type, loop_config, depends_on, when_clause, gate, retry_strategy)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, swarmId, flightId, beeId, flightIndex, inputTemplate, expects, status, maxRetries, type, loopConfig ?? null, dependsOnJson, whenClause ?? null, gate ?? null, retryStrategy ?? null);
   return getFlight(id)!;
 }
 
@@ -360,7 +377,8 @@ export function peekFlightsForBee(beeId: string): number {
     .prepare(
       `SELECT COUNT(*) as count FROM flights f
        JOIN swarms s ON f.swarm_id = s.id
-       WHERE f.bee_id = ? AND f.status = 'pending' AND s.status = 'buzzing'`,
+       WHERE f.bee_id = ? AND f.status = 'pending' AND s.status = 'buzzing'
+       AND (f.retry_at IS NULL OR f.retry_at <= datetime('now'))`,
     )
     .get(beeId);
   return row<{ count: number }>(result).count;
@@ -378,6 +396,7 @@ export function peekFlightsForBees(beeIds: string[]): Map<string, number> {
       `SELECT f.bee_id, COUNT(*) as count FROM flights f
        JOIN swarms s ON f.swarm_id = s.id
        WHERE f.bee_id IN (${placeholders}) AND f.status = 'pending' AND s.status = 'buzzing'
+       AND (f.retry_at IS NULL OR f.retry_at <= datetime('now'))
        GROUP BY f.bee_id`,
     )
     .all(...beeIds) as Array<{ bee_id: string; count: number }>;
@@ -395,6 +414,7 @@ export function claimFlightForBee(beeId: string): FlightRecord | undefined {
       `SELECT f.* FROM flights f
        JOIN swarms s ON f.swarm_id = s.id
        WHERE f.bee_id = ? AND f.status = 'pending' AND s.status = 'buzzing'
+       AND (f.retry_at IS NULL OR f.retry_at <= datetime('now'))
        ORDER BY f.flight_index ASC
        LIMIT 1`,
     )
@@ -415,7 +435,7 @@ export function updateFlight(
   updates: Partial<
     Pick<
       FlightRecord,
-      "status" | "output" | "retry_count" | "current_cell_id" | "abandoned_count" | "verify_meta" | "started_at" | "completed_at"
+      "status" | "output" | "retry_count" | "current_cell_id" | "abandoned_count" | "verify_meta" | "started_at" | "completed_at" | "retry_at"
     >
   >,
 ): void {
@@ -454,6 +474,10 @@ export function updateFlight(
   if (updates.completed_at !== undefined) {
     sets.push("completed_at = ?");
     params.push(updates.completed_at);
+  }
+  if (updates.retry_at !== undefined) {
+    sets.push("retry_at = ?");
+    params.push(updates.retry_at);
   }
 
   params.push(id);
@@ -718,6 +742,35 @@ export function getFlightElapsed(flightUuid: string): number | null {
      FROM flights WHERE id = ?`,
   ).get(flightUuid) as { elapsed: number | null } | undefined;
   return result?.elapsed ?? null;
+}
+
+// ── Phase 9 Queries ─────────────────────────────────────────────────
+
+export function getGatedFlightsForSwarm(swarmId: string): FlightRecord[] {
+  const db = getDb();
+  return rows<FlightRecord>(
+    db.prepare("SELECT * FROM flights WHERE swarm_id = ? AND status = 'gated' ORDER BY flight_index ASC").all(swarmId),
+  );
+}
+
+export function getVerificationLoopCells(swarmId: string, maxRetries: number = 3): CellRecord[] {
+  const db = getDb();
+  return rows<CellRecord>(
+    db.prepare(
+      `SELECT * FROM cells WHERE swarm_id = ? AND status = 'pending' AND retry_count >= ?`,
+    ).all(swarmId, maxRetries),
+  );
+}
+
+export function getStuckCells(swarmId: string, minutes: number = 30): CellRecord[] {
+  const db = getDb();
+  return rows<CellRecord>(
+    db.prepare(
+      `SELECT * FROM cells WHERE swarm_id = ? AND status = 'in_progress'
+       AND started_at IS NOT NULL
+       AND started_at < datetime('now', '-' || ? || ' minutes')`,
+    ).all(swarmId, minutes),
+  );
 }
 
 /** Close the database connection */

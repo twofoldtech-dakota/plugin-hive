@@ -2,6 +2,9 @@ import * as db from "../db.js";
 import { emitEvent } from "../lib/events.js";
 import { logger } from "../lib/logger.js";
 import { nowUtc } from "../lib/time.js";
+import { computeRetryDelay, computeRetryAt } from "./backoff.js";
+import { safeJsonParse } from "../lib/json.js";
+import type { RetryStrategy } from "../types.js";
 
 export type FailFlightResult =
   | { success: true; message: string; retrying: boolean }
@@ -30,16 +33,23 @@ export function failFlight(flightId: string, error: string): FailFlightResult {
 
   // Check retries for the flight itself
   if (flight.retry_count < flight.max_retries) {
+    const strategy = safeJsonParse<RetryStrategy | null>(flight.retry_strategy ?? "", null);
+    const newRetryCount = flight.retry_count + 1;
+    const delaySeconds = computeRetryDelay(strategy, newRetryCount);
+    const retryAt = computeRetryAt(delaySeconds);
+
     db.updateFlight(flightId, {
       status: "pending",
-      retry_count: flight.retry_count + 1,
+      retry_count: newRetryCount,
       current_cell_id: null,
+      retry_at: retryAt,
     });
-    emitEvent({ eventType: "flight.failed", swarmId: flight.swarm_id, payload: { flight_id: flight.flight_id, error, retrying: true } });
+    emitEvent({ eventType: "flight.failed", swarmId: flight.swarm_id, payload: { flight_id: flight.flight_id, error, retrying: true, retry_at: retryAt } });
+    const delayMsg = delaySeconds > 0 ? ` (delay: ${delaySeconds}s)` : "";
     return {
       success: true,
       retrying: true,
-      message: `Flight "${flight.flight_id}" failed, retrying (attempt ${flight.retry_count + 1}/${flight.max_retries})`,
+      message: `Flight "${flight.flight_id}" failed, retrying (attempt ${newRetryCount}/${flight.max_retries})${delayMsg}`,
     };
   }
 

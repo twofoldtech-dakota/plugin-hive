@@ -72,6 +72,35 @@ export function stopOrphanedScheduler(swarmId: string): RemediationResult {
 }
 
 /**
+ * Force-pass a cell stuck in a verification loop.
+ */
+export function forcePassCell(cellId: string): RemediationResult {
+  const cell = db.getCell(cellId);
+  if (!cell) {
+    return { action: "forcePassCell", entity_id: cellId, success: false, detail: "Cell not found" };
+  }
+
+  db.updateCell(cellId, { status: "done", output: "FORCE_PASSED: beekeeper resolved verification loop", completed_at: nowUtc() });
+  emitEvent({ eventType: "cell.completed", swarmId: cell.swarm_id, payload: { cell_id: cellId, force_passed: true } });
+  logger.info("Beekeeper: force-passed verification loop cell", { cellId });
+  return { action: "forcePassCell", entity_id: cellId, success: true, detail: `Force-passed cell (retried ${cell.retry_count} times)` };
+}
+
+/**
+ * Reset a stuck cell back to pending.
+ */
+export function resetStuckCell(cellId: string): RemediationResult {
+  const cell = db.getCell(cellId);
+  if (!cell) {
+    return { action: "resetStuckCell", entity_id: cellId, success: false, detail: "Cell not found" };
+  }
+
+  db.updateCell(cellId, { status: "pending" });
+  logger.info("Beekeeper: reset stuck cell", { cellId });
+  return { action: "resetStuckCell", entity_id: cellId, success: true, detail: "Reset cell to pending" };
+}
+
+/**
  * Fail an exhausted flight and its swarm.
  */
 export function failExhaustedFlight(flightId: string): RemediationResult {
